@@ -61,6 +61,12 @@ If a backend's credentials are missing, that backend is disabled at startup. A w
 2. Authentication: API key, header `X-Api-Key`. Use the **read key** for org mapping and the **write key** only for workflows that change things.
 3. For organization mapping, use `list_companies` (`GET /v1/companies`). Map using **`id`**, not `name`. `id` is the raw Custom Property 1 value: some companies have stray leading or trailing spaces, and `id` keeps them so lookups match exactly. `name` is trimmed for display.
 4. To list a mapped company's machines, call `GET /v1/companies/{id}/sessions` with the `id` URL-encoded. A leading space becomes `%20`.
+5. Rewst stores mapping ids **lowercased and trimmed**. That's fine: company ids are resolved in two steps, so `{{ ORG.MAPPINGS["…"] }}` can be passed straight in.
+   - An exact match wins.
+   - Otherwise a unique case- and whitespace-insensitive match is used. The response then carries `X-Gateway-Resolved-Company: <url-encoded raw id>`.
+   - If several stored spellings match (e.g. `Acme` and `ACME `), the response is `409 {"message": "ambiguous company id", "candidates": [...]}`.
+   - The same resolution applies to the company segment of `/v1/session-groups/sessions?path=<COMPANY_GROUP_PATH>&path=<company>`.
+   - Genuinely different spellings (e.g. `D and B` vs `D&B`) are not merged. Fix those in Custom Property 1 or map each one.
 
 ## API
 

@@ -7,7 +7,7 @@ def test_restful_first_by_default(client, fake):
     response = client.get(f"/v1/sessions/{SESSION_ID}", headers=READ)
     assert response.status_code == 200
     assert response.headers["X-Gateway-Backend"] == "restful"
-    assert response.json()["isOnline"] is None
+    assert response.json()["isOnline"] is False  # restful also returns ActiveConnections
 
 
 def test_native_first_preference(make_client, fake):

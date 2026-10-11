@@ -3,7 +3,7 @@
   "info": {
     "title": "ScreenConnect Gateway",
     "description": "Single REST API over ConnectWise ScreenConnect's built-in web API and the RESTful API Manager extension. All reads are GET. Responses carry `X-Gateway-Backend: restful|native`. Errors are always `{\"message\": \"...\"}`.",
-    "version": "1.0.0"
+    "version": "1.1.0"
   },
   "servers": [
     {
@@ -183,10 +183,10 @@
             "required": true,
             "schema": {
               "type": "string",
-              "description": "Company id exactly as returned by /v1/companies",
+              "description": "Company id as returned by /v1/companies. A lowercased/trimmed form (as stored by Rewst org mappings) also works when it matches exactly one company.",
               "title": "Companyid"
             },
-            "description": "Company id exactly as returned by /v1/companies"
+            "description": "Company id as returned by /v1/companies. A lowercased/trimmed form (as stored by Rewst org mappings) also works when it matches exactly one company."
           },
           {
             "name": "sessionType",
@@ -234,6 +234,24 @@
                     "$ref": "#/components/schemas/Session"
                   },
                   "title": "Response List Company Sessions"
+                }
+              }
+            },
+            "headers": {
+              "X-Gateway-Resolved-Company": {
+                "description": "URL-encoded raw company id, present when the given id matched only case/whitespace-insensitively (e.g. a lowercased Rewst mapping id)",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Company id matches more than one company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AmbiguousCompany"
                 }
               }
             }
@@ -539,6 +557,24 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GroupSessions"
+                }
+              }
+            },
+            "headers": {
+              "X-Gateway-Resolved-Company": {
+                "description": "URL-encoded raw company id, present when the given id matched only case/whitespace-insensitively (e.g. a lowercased Rewst mapping id)",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Company id matches more than one company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AmbiguousCompany"
                 }
               }
             }
@@ -2395,6 +2431,28 @@
   },
   "components": {
     "schemas": {
+      "AmbiguousCompany": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "candidates": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Candidates",
+            "description": "Raw company ids that match case- and whitespace-insensitively"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message",
+          "candidates"
+        ],
+        "title": "AmbiguousCompany"
+      },
       "BackendHealth": {
         "properties": {
           "ok": {
@@ -3166,7 +3224,7 @@
               }
             ],
             "title": "Isonline",
-            "description": "Agent connected. Native backend only; null from restful."
+            "description": "Agent connected (an active guest connection). Null only if the upstream omits connection data."
           }
         },
         "type": "object",

@@ -211,7 +211,7 @@ def test_group_sessions(client, fake):
     assert response.status_code == 200
     assert response.json()["groups"] == [{"name": "Acme", "sessionCount": 3, "hasSubgroupExpression": False}]
     assert response.json()["sessions"][0]["isOnline"] is True
-    info = fake.calls_to("native", "PageService.ashx/GetLiveData")[0][0]["HostSessionInfo"]
+    info = fake.calls_to("native", "PageService.ashx/GetLiveData")[-1][0]["HostSessionInfo"]
     assert info["sessionGroupPathParts"] == ["All Machines by Company", "Acme"]
     assert info["filter"] == "GuestMachineName LIKE 'PC*'"
     assert info["sessionLimit"] == 50

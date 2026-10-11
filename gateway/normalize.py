@@ -16,15 +16,26 @@ def pad_custom_properties(values: Any) -> list[str]:
     return strings + [""] * (CUSTOM_PROPERTY_COUNT - len(strings))
 
 
+def normalize_company_id(value: str) -> str:
+    """Rewst stores mapping ids lowercased and trimmed; compare on that form."""
+    return " ".join(value.split()).casefold()
+
+
 def escape_filter_value(value: str) -> str:
     """ScreenConnect filter strings are single-quoted; quotes are escaped by doubling."""
     return value.replace("'", "''")
 
 
-def normalize_session(raw: dict[str, Any], *, native: bool) -> dict[str, Any]:
+def _first(*values: Any) -> Any:
+    return next((value for value in values if value not in (None, "")), None)
+
+
+def normalize_session(raw: dict[str, Any]) -> dict[str, Any]:
+    """Handles both upstream shapes: native has flat Guest* fields, restful nests them in GuestInfo."""
     properties = pad_custom_properties(raw.get("CustomPropertyValues"))
+    guest = raw.get("GuestInfo") or {}
     is_online = None
-    if native:
+    if "ActiveConnections" in raw:
         is_online = any(
             connection.get("ProcessType") == AGENT_PROCESS_TYPE
             for connection in raw.get("ActiveConnections") or []
@@ -33,9 +44,9 @@ def normalize_session(raw: dict[str, Any], *, native: bool) -> dict[str, Any]:
         "sessionId": str(raw.get("SessionID") or ""),
         "name": raw.get("Name"),
         "sessionType": raw.get("SessionType"),
-        "guestMachineName": raw.get("GuestMachineName"),
-        "guestLoggedOnUserName": raw.get("GuestLoggedOnUserName"),
-        "operatingSystem": raw.get("GuestOperatingSystemName"),
+        "guestMachineName": _first(raw.get("GuestMachineName"), guest.get("MachineName")),
+        "guestLoggedOnUserName": _first(raw.get("GuestLoggedOnUserName"), guest.get("LoggedOnUserName")),
+        "operatingSystem": _first(raw.get("GuestOperatingSystemName"), guest.get("OperatingSystemName")),
         "company": properties[0],
         "site": properties[1],
         "department": properties[2],

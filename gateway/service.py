@@ -6,16 +6,17 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Generic, Literal, TypeVar
 
 from .config import Settings
-from .errors import BadRequestError, ForbiddenError, GatewayError, NotFoundError, UpstreamTimeoutError
+from .errors import AmbiguousCompanyError, BadRequestError, ForbiddenError, GatewayError, NotFoundError, UpstreamTimeoutError
 from .normalize import (
     build_command,
     companies_from_sessions,
     companies_from_summaries,
     escape_filter_value,
+    normalize_company_id,
     merge_custom_properties,
     normalize_connection,
     normalize_events,
@@ -42,6 +43,7 @@ COMPANY_INDEX = 0
 class Served(Generic[T]):
     value: T
     backend: str
+    resolved_company: str | None = None  # raw id, set when a non-exact company id was resolved
 
 
 class Gateway:
@@ -215,13 +217,34 @@ class Gateway:
     async def _companies_restful(self) -> list[dict[str, Any]]:
         return companies_from_sessions(await self._restful_sessions_by_filter("CustomProperty1 <> ''"))
 
+    async def resolve_company(self, company_id: str) -> tuple[str, bool]:
+        """Map a company id to the raw stored value: exact match first, then a unique
+        case/whitespace-insensitive match. Returns (raw id, whether it was resolved)."""
+        try:
+            companies = (await self.list_companies()).value
+        except GatewayError:
+            return company_id, False  # can't resolve; let the exact lookup decide
+        raw_ids = [company["id"] for company in companies]
+        if company_id in raw_ids:
+            return company_id, False
+        wanted = normalize_company_id(company_id)
+        matches = sorted(raw_id for raw_id in raw_ids if normalize_company_id(raw_id) == wanted)
+        if len(matches) > 1:
+            raise AmbiguousCompanyError("ambiguous company id", candidates=matches)
+        if matches:
+            return matches[0], True
+        return company_id, False
+
     async def list_company_sessions(
         self, company_id: str, session_type: int, forced: str | None = None
     ) -> Served[list[dict[str, Any]]]:
-        def exact(raw_sessions: list[dict[str, Any]], *, native: bool) -> list[dict[str, Any]]:
+        requested_id = company_id
+        company_id, resolved = await self.resolve_company(company_id)
+
+        def exact(raw_sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
             # Exact match on the raw value: " Acme" and "Acme" are different companies.
             return [
-                normalize_session(raw, native=native)
+                normalize_session(raw)
                 for raw in raw_sessions
                 if pad_custom_properties(raw.get("CustomPropertyValues"))[COMPANY_INDEX] == company_id
                 and raw.get("SessionType", session_type) == session_type
@@ -229,19 +252,18 @@ class Gateway:
 
         async def restful() -> list[dict[str, Any]]:
             expression = f"CustomProperty1 = '{escape_filter_value(company_id)}'"
-            return exact(await self._restful_sessions_by_filter(expression), native=False)
+            return exact(await self._restful_sessions_by_filter(expression))
 
         async def native() -> list[dict[str, Any]]:
             info = await self._live_data(
                 path=[self.settings.company_group_path, company_id], session_type=session_type
             )
-            return exact(info.get("Sessions") or [], native=True)
+            return exact(info.get("Sessions") or [])
 
         served = await self._dispatch({"restful": restful, "native": native}, forced=forced)
         if not served.value:
-            error = NotFoundError(f"no sessions found for company '{company_id}'", backend=served.backend)
-            raise error
-        return served
+            raise NotFoundError(f"no sessions found for company '{requested_id}'", backend=served.backend)
+        return replace(served, resolved_company=company_id) if resolved else served
 
     # ---------- session groups ----------
 
@@ -260,6 +282,13 @@ class Gateway:
         limit: int,
         forced: str | None = None,
     ) -> Served[dict[str, Any]]:
+        resolved_company = None
+        if len(path) >= 2 and path[0] == self.settings.company_group_path:
+            raw_id, resolved = await self.resolve_company(path[1])
+            if resolved:
+                path = [path[0], raw_id, *path[2:]]
+                resolved_company = raw_id
+
         async def native() -> dict[str, Any]:
             info = await self._live_data(
                 path=path, session_type=session_type, filter_expression=filter_expression, limit=limit
@@ -268,10 +297,11 @@ class Gateway:
             last_level = levels[-1] if levels else []
             return {
                 "groups": [normalize_group_summary(summary) for summary in last_level or []],
-                "sessions": [normalize_session(raw, native=True) for raw in info.get("Sessions") or []],
+                "sessions": [normalize_session(raw) for raw in info.get("Sessions") or []],
             }
 
-        return await self._dispatch({"native": native}, forced=forced)
+        served = await self._dispatch({"native": native}, forced=forced)
+        return replace(served, resolved_company=resolved_company) if resolved_company else served
 
     # ---------- sessions (reads) ----------
 
@@ -296,7 +326,7 @@ class Gateway:
                 raw = await self.restful.call("GetSessionsByName", [name], idempotent=True) or []
             else:
                 raw = await self._restful_sessions_by_filter(filter_expression or "")
-            return of_type([normalize_session(item, native=False) for item in raw])
+            return of_type([normalize_session(item) for item in raw])
 
         async def native() -> list[dict[str, Any]]:
             expression = f"Name = '{escape_filter_value(name)}'" if name is not None else filter_expression
@@ -305,16 +335,16 @@ class Gateway:
                 session_type=2 if session_type is None else session_type,
                 filter_expression=expression or "",
             )
-            return [normalize_session(raw, native=True) for raw in info.get("Sessions") or []]
+            return [normalize_session(raw) for raw in info.get("Sessions") or []]
 
         return await self._dispatch({"restful": restful, "native": native}, forced=forced)
 
     async def get_session(self, session_id: str, forced: str | None = None) -> Served[dict[str, Any]]:
         async def restful() -> dict[str, Any]:
-            return normalize_session(await self._restful_get_session(session_id), native=False)
+            return normalize_session(await self._restful_get_session(session_id))
 
         async def native() -> dict[str, Any]:
-            return normalize_session(await self._native_find_session(session_id), native=True)
+            return normalize_session(await self._native_find_session(session_id))
 
         return await self._dispatch({"restful": restful, "native": native}, forced=forced)
 
@@ -326,7 +356,7 @@ class Gateway:
             if not data or not data.get("Session"):
                 raise NotFoundError(f"session {session_id} not found")
             return {
-                "session": normalize_session(data["Session"], native=False),
+                "session": normalize_session(data["Session"]),
                 "events": normalize_events(data.get("Events")),
             }
 
@@ -334,7 +364,7 @@ class Gateway:
             data = await self._native_details(session_id, group)
             session = data["Session"]
             return {
-                "session": normalize_session(session, native=True),
+                "session": normalize_session(session),
                 "events": normalize_events(data.get("Events"), session.get("Events")),
             }
 

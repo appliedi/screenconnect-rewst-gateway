@@ -1,6 +1,6 @@
 [project]
 name = "sc-gateway"
-version = "1.0.0"
+version = "1.1.0"
 description = "ScreenConnect Gateway: one REST API over both ScreenConnect APIs, for Rewst"
 readme = "README.md"
 requires-python = ">=3.12"

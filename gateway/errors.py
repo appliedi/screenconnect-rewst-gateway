@@ -35,6 +35,14 @@ class NotFoundError(GatewayError):
     status_code = 404
 
 
+class AmbiguousCompanyError(GatewayError):
+    status_code = 409
+
+    def __init__(self, message: str, *, candidates: list[str]):
+        super().__init__(message)
+        self.candidates = candidates
+
+
 class RateLimitedError(GatewayError):
     status_code = 429
 

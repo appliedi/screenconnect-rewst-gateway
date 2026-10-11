@@ -6,6 +6,7 @@ import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, Literal
+from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, FastAPI, Path, Query, Request, Response
@@ -16,17 +17,30 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import models
 from .config import Settings
-from .errors import AuthenticationError, ForbiddenError, GatewayError, RateLimitedError
+from .errors import AmbiguousCompanyError, AuthenticationError, ForbiddenError, GatewayError, RateLimitedError
 from .logs import audit_write, configure_logging, install_redaction, secret_registry
 from .security import READ_METHODS, RateLimiter, identify_key, source_ip_allowed
 from .service import Gateway, Served
 from .upstream.native import NativeClient
 from .upstream.restful import RestfulClient
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 logger = logging.getLogger("gateway")
 
 BACKEND_HEADER = "X-Gateway-Backend"
+RESOLVED_COMPANY_HEADER = "X-Gateway-Resolved-Company"
+COMPANY_RESOLUTION_RESPONSES: dict[int | str, dict[str, Any]] = {
+    200: {
+        "headers": {
+            RESOLVED_COMPANY_HEADER: {
+                "description": "URL-encoded raw company id, present when the given id matched only "
+                "case/whitespace-insensitively (e.g. a lowercased Rewst mapping id)",
+                "schema": {"type": "string"},
+            }
+        }
+    },
+    409: {"model": models.AmbiguousCompany, "description": "Company id matches more than one company"},
+}
 OPEN_PATHS = {"/health"}
 AUTH_EXEMPT_PATHS = {"/health", "/openapi.json"}
 MAX_BODY_BYTES = 1_000_000
@@ -45,6 +59,8 @@ GroupParam = Annotated[
 
 def served(response: Response, result: Served[Any]) -> Any:
     response.headers[BACKEND_HEADER] = result.backend
+    if result.resolved_company is not None:
+        response.headers[RESOLVED_COMPANY_HEADER] = quote(result.resolved_company, safe="")
     return result.value
 
 
@@ -109,7 +125,10 @@ def create_app(
             headers["Retry-After"] = str(exc.retry_after)
         if exc.status_code >= 500:
             logger.warning("request failed: %s (%s)", exc.message, type(exc).__name__)
-        return JSONResponse({"message": exc.message}, status_code=exc.status_code, headers=headers)
+        body: dict[str, Any] = {"message": exc.message}
+        if isinstance(exc, AmbiguousCompanyError):
+            body["candidates"] = exc.candidates
+        return JSONResponse(body, status_code=exc.status_code, headers=headers)
 
     @app.exception_handler(GatewayError)
     async def gateway_error_handler(_: Request, exc: GatewayError) -> JSONResponse:
@@ -248,10 +267,18 @@ def create_app(
         operation_id="list_company_sessions",
         response_model=list[models.Session],
         tags=["companies"],
+        responses=COMPANY_RESOLUTION_RESPONSES,
     )
     async def list_company_sessions(
         response: Response,
-        company_id: Annotated[str, Path(alias="companyId", description="Company id exactly as returned by /v1/companies")],
+        company_id: Annotated[
+            str,
+            Path(
+                alias="companyId",
+                description="Company id as returned by /v1/companies. A lowercased/trimmed form "
+                "(as stored by Rewst org mappings) also works when it matches exactly one company.",
+            ),
+        ],
         session_type: Annotated[int, Query(alias="sessionType", ge=0, le=2)] = 2,
         backend: BackendParam = None,
     ):
@@ -271,6 +298,7 @@ def create_app(
         operation_id="list_group_sessions",
         response_model=models.GroupSessions,
         tags=["session-groups"],
+        responses=COMPANY_RESOLUTION_RESPONSES,
     )
     async def list_group_sessions(
         response: Response,

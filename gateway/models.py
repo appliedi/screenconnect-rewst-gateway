@@ -18,6 +18,11 @@ class ErrorMessage(BaseModel):
     message: str
 
 
+class AmbiguousCompany(BaseModel):
+    message: str
+    candidates: list[str] = Field(description="Raw company ids that match case- and whitespace-insensitively")
+
+
 # ---------- responses ----------
 
 
@@ -50,7 +55,7 @@ class Session(CamelModel):
     department: str = Field(description="Custom Property 3")
     device_type: str = Field(description="Custom Property 4 (Laptop/Workstation/Server/Domain Controller)")
     custom_properties: list[str] = Field(min_length=8, max_length=8)
-    is_online: bool | None = Field(None, description="Agent connected. Native backend only; null from restful.")
+    is_online: bool | None = Field(None, description="Agent connected (an active guest connection). Null only if the upstream omits connection data.")
 
 
 class SessionEvent(CamelModel):
