@@ -3,7 +3,7 @@
   "info": {
     "title": "ScreenConnect Gateway",
     "description": "Single REST API over ConnectWise ScreenConnect's built-in web API and the RESTful API Manager extension. All reads are GET. Responses carry `X-Gateway-Backend: restful|native`. Errors are always `{\"message\": \"...\"}`.",
-    "version": "1.4.2"
+    "version": "1.4.3"
   },
   "servers": [
     {
@@ -4479,9 +4479,17 @@
             "title": "Receivedat",
             "description": "ISO-8601 UTC. Native times in the payload are relative (seconds/ms before this or BaseTime)"
           },
+          "omittedFields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Omittedfields",
+            "description": "Object keys removed at every depth because they are agent credentials (GuestPublicKey, WakeToken, ClientMachineCookie). Nothing else is removed."
+          },
           "response": {
             "title": "Response",
-            "description": "Exactly what ScreenConnect returned; no fields removed"
+            "description": "What ScreenConnect returned, minus omittedFields"
           }
         },
         "type": "object",
@@ -4489,6 +4497,7 @@
           "backend",
           "upstreamMethod",
           "receivedAt",
+          "omittedFields",
           "response"
         ],
         "title": "RawResponse",

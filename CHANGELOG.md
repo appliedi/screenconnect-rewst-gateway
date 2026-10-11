@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.3] - 2026-10-11
+
+### Security
+- **Raw responses no longer include agent credentials:** `GuestPublicKey`, `WakeToken` and
+  `ClientMachineCookie` are removed wherever they occur, since raw payloads end up in Rewst
+  workflow run history.
+  - The envelope lists them in `omittedFields`.
+  - Everything else is unchanged, including the public IP (`GuestNetworkAddress`).
+
 ## [1.4.2] - 2026-10-11
 
 ### Security

@@ -29,6 +29,15 @@ def normalize_company_id(value: str) -> str:
     return " ".join(value.split()).casefold()
 
 
+def omit_keys(value: Any, keys: frozenset[str] | set[str] | tuple[str, ...]) -> Any:
+    """Copy of a JSON value with the given object keys removed at every depth."""
+    if isinstance(value, dict):
+        return {key: omit_keys(item, keys) for key, item in value.items() if key not in keys}
+    if isinstance(value, list):
+        return [omit_keys(item, keys) for item in value]
+    return value
+
+
 def escape_filter_value(value: str) -> str:
     """ScreenConnect filter strings are single-quoted; quotes are escaped by doubling."""
     return value.replace("'", "''")

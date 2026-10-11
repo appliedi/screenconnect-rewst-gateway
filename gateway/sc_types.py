@@ -100,6 +100,10 @@ DETAILS_ALL = -1
 
 DEFAULT_USER_SOURCE = "InternalMembershipProvider"
 
+# Agent credentials with no workflow use. Raw responses end up in Rewst run history, so these
+# keys are removed wherever they occur (the public IP, GuestNetworkAddress, is kept).
+RAW_OMITTED_KEYS = ("GuestPublicKey", "WakeToken", "ClientMachineCookie")
+
 
 def canonical_user_name(name: str) -> str:
     """Comparison form for user names: Unicode-compatibility folded, trimmed, case-insensitive."""

@@ -155,8 +155,8 @@ The gateway covers all 16 operations of Rewst's two original ScreenConnect integ
 |---|---|---|---|---|---|---|---|
 | 1 | AddNoteToSession | add_note | sessionID, noteBody | `{sessionId, ok}` | ✅ | ✅ | not executed (write) |
 | 2 | CreateSession | create_session | sessionType 0/1/2, name, isPublic, code, all 8 custom properties (named or indexed; conflicts → 400) | normalized + `raw` upstream response | ✅ | ✅ all 3 types, 8 properties, conflicts | not executed (write) |
-| 3 | GetSessionBySessionID | get_session, raw_get_session | sessionID | normalized session / verbatim | ✅ | ✅ incl. unknown-field preservation | ✅ |
-| 4 | GetSessionDetailsBySessionID | get_session_details, get_connection_logs, raw_get_session_details | sessionID | session, events (host, connectionId, correlationEventId), connections / verbatim (incl. screenshot) | ✅ | ✅ | ✅ Access + Support |
+| 3 | GetSessionBySessionID | get_session, raw_get_session | sessionID | normalized session / full record minus credentials | ✅ | ✅ unknown fields kept, credentials omitted | ✅ |
+| 4 | GetSessionDetailsBySessionID | get_session_details, get_connection_logs, raw_get_session_details | sessionID | session, events (host, connectionId, correlationEventId), connections / full record minus credentials (incl. screenshot) | ✅ | ✅ | ✅ Access + Support |
 | 5 | GetSessionsByFilter | search_sessions (`filter`), raw_search_sessions | sessionFilter expression | normalized list (all types unless `sessionType`) / verbatim | ✅ | ✅ | ✅ |
 | 6 | GetSessionsByName | search_sessions (`name`), raw_search_sessions | sessionName | normalized list / verbatim | ✅ | ✅ | ✅ |
 | 7 | SendCommandToSession | send_command | sessionID, command (+ `#!ps`, `#timeout=` helpers) | `{sessionId, queued}` | ✅ | ✅ | not executed (write) |
@@ -172,7 +172,12 @@ The gateway covers all 16 operations of Rewst's two original ScreenConnect integ
 
 ### Raw compatibility endpoints
 
-`/v1/raw/...` returns ScreenConnect's payload **verbatim** in `response`, alongside `backend`, `upstreamMethod` and `receivedAt`. Nothing is removed, including fields the gateway doesn't know about.
+`/v1/raw/...` returns ScreenConnect's payload in `response`, alongside `backend`, `upstreamMethod`, `receivedAt` and `omittedFields`. Everything is kept, including fields the gateway doesn't know about, except:
+
+- **Removed:** three agent credentials, wherever they occur: `GuestPublicKey`, `WakeToken` and `ClientMachineCookie`.
+- **Why:** raw payloads end up in Rewst workflow run history.
+- **Kept:** the public IP (`GuestNetworkAddress`) and `ScreenshotContentHash`.
+- **For everyday workflows,** use the normal operations; the raw ones are for when you truly need the full record.
 
 - **Read-only:** they're GET only and use the read key.
 - **Allowlisted:** they're limited to the allowlisted methods, with typed parameters, so they aren't a general proxy.

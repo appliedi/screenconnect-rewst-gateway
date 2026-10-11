@@ -34,9 +34,11 @@ from .normalize import (
     normalize_group_summary,
     normalize_session,
     normalize_session_group,
+    omit_keys,
     pad_custom_properties,
 )
 from .sc_types import (
+    RAW_OMITTED_KEYS,
     canonical_user_name,
     DETAILS_CONNECTIONS,
     DETAILS_EVENTS,
@@ -603,7 +605,8 @@ class Gateway:
                 "backend": backend,
                 "upstreamMethod": method,
                 "receivedAt": _iso(self._wall_clock()),
-                "response": response,
+                "omittedFields": list(RAW_OMITTED_KEYS),
+                "response": omit_keys(response, RAW_OMITTED_KEYS),
             }
 
         return await self._dispatch({backend: operation})

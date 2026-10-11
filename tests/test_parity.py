@@ -92,13 +92,27 @@ def test_02_create_session_rejects_conflicting_named_and_indexed_values(client, 
 def test_03_get_session_by_session_id(client, fake):
     upstream = raw_session(properties=["Acme", "HQ", "", "Server", "", "", "", ""])
     upstream["FutureUpstreamField"] = {"nested": [1, 2]}
-    fake.restful["GetSessionBySessionID"] = lambda args: [upstream]
+    upstream["GuestNetworkAddress"] = "203.0.113.7"
+    secrets = {
+        "GuestPublicKey": "BgIAAACkAABSU0Ex",
+        "GuestInfo": {"MachineName": "PC-01", "WakeToken": "wake-secret", "ScreenshotContentHash": "abc"},
+        "ActiveConnections": [{"ProcessType": 2, "ClientMachineCookie": "cookie-secret"}],
+    }
+    fake.restful["GetSessionBySessionID"] = lambda args: [{**upstream, **secrets}]
     normalized = client.get(f"/v1/sessions/{SESSION_ID}", headers=READ).json()
     assert normalized["sessionId"] == SESSION_ID and normalized["deviceType"] == "Server"
     raw = client.get(f"/v1/raw/restful/sessions/{SESSION_ID}", headers=READ)
     assert raw.headers["X-Gateway-Backend"] == "restful"
     assert raw.json()["upstreamMethod"] == "GetSessionBySessionID"
-    assert raw.json()["response"] == [upstream]  # verbatim, unknown fields included
+    body = raw.json()
+    assert body["omittedFields"] == ["GuestPublicKey", "WakeToken", "ClientMachineCookie"]
+    returned = body["response"][0]
+    assert "GuestPublicKey" not in returned
+    assert "WakeToken" not in returned["GuestInfo"] and returned["GuestInfo"]["ScreenshotContentHash"] == "abc"
+    assert returned["ActiveConnections"] == [{"ProcessType": 2}]
+    assert returned["GuestNetworkAddress"] == "203.0.113.7"  # public IP kept
+    assert returned["FutureUpstreamField"] == {"nested": [1, 2]}  # unknown fields kept
+    assert "secret" not in raw.text
     assert fake.calls_to("restful", "GetSessionBySessionID") == [[SESSION_ID], [SESSION_ID]]
 
 
@@ -128,7 +142,8 @@ def test_04_get_session_details_by_session_id(client, fake):
          "networkAddress": "10.0.0.5", "attributes": 0, "events": []}
     ]
     raw = client.get(f"/v1/raw/restful/sessions/{SESSION_ID}/details", headers=READ).json()
-    assert raw["response"] == payload
+    expected = {**payload, "Connections": [{k: v for k, v in payload["Connections"][0].items() if k != "ClientMachineCookie"}]}
+    assert raw["response"] == expected  # everything except the omitted credential keys
 
 
 def test_05_get_sessions_by_filter(client, fake):

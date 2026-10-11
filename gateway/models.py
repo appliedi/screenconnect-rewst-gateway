@@ -157,7 +157,11 @@ class RawResponse(CamelModel):
     received_at: str = Field(
         description="ISO-8601 UTC. Native times in the payload are relative (seconds/ms before this or BaseTime)"
     )
-    response: Any = Field(description="Exactly what ScreenConnect returned; no fields removed")
+    omitted_fields: list[str] = Field(
+        description="Object keys removed at every depth because they are agent credentials "
+        "(GuestPublicKey, WakeToken, ClientMachineCookie). Nothing else is removed."
+    )
+    response: Any = Field(description="What ScreenConnect returned, minus omittedFields")
 
 
 class QueuedResult(CamelModel):
