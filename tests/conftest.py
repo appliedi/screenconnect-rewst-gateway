@@ -130,6 +130,7 @@ def make_settings(**overrides: Any) -> Settings:
         sc_password=PASSWORD,
         read_key=READ_KEY,
         write_key=WRITE_KEY,
+        allowed_user_roles=("*",),  # user management is opt-in; tests enable it explicitly
     )
     return replace(base, **overrides)
 

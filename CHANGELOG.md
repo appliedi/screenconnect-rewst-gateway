@@ -23,7 +23,9 @@ matrix in the README.
 - **`add_session_events`.** It exposes native `AddSessionEvents` batches (up to 100) for a
   session group path.
   - Event types are validated against ScreenConnect's `SessionEventType` enum.
-  - Optional `ALLOWED_EVENT_TYPES` restricts which types can be queued.
+  - It fails closed. By default only a safe set can be queued (acknowledge, note, wake, command,
+    message, guest-info update, toolbox tool). Destructive types need `ALLOWED_EVENT_TYPES`, and
+    `all` enables every type.
 - **`create_session` accepts all 8 custom properties** (`customProperties` "0"-"7"). A named field and its
   index must agree, otherwise the request is rejected (400). The response now includes the
   upstream response as `raw`.
@@ -51,6 +53,14 @@ matrix in the README.
 
 ### Fixed
 - **Documentation of event types:** 44 is `QueuedCommand` and 70 is `RanCommand` (the command output).
+
+### Security
+- **User management fails closed.** `create_user` and `save_user` return 403 until `ALLOWED_USER_ROLES`
+  is set (`*` allows any role). This prevents a write key from creating administrators or resetting
+  admin passwords by default. **Breaking:** set `ALLOWED_USER_ROLES` if you used `create_user`.
+- **The gateway's own service account** (`SC_USERNAME`) can never be created, changed or renamed
+  through `save_user`.
+- **`add_session_events` fails closed** to a safe default set of event types, as described above.
 
 ## [1.3.0] - 2026-10-11
 

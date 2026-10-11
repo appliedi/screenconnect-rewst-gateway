@@ -238,6 +238,29 @@ def test_12_add_session_events_limits(make_client, fake):
     assert fake.calls_to("native", "PageService.ashx/AddSessionEvents") == []
 
 
+def test_12_destructive_event_types_are_opt_in(make_client, fake):
+    fake.native["PageService.ashx/AddSessionEvents"] = lambda args: None
+    uninstall = {"groupPath": ["All Machines"], "events": [{"sessionId": SESSION_ID, "eventType": "QueuedUninstallAndDelete"}]}
+    default = make_client()
+    response = default.post("/v1/session-events", json=uninstall, headers=WRITE)
+    assert response.status_code == 403 and response.json() == {"message": "event types not allowed: 100"}
+    from gateway.sc_types import SESSION_EVENT_TYPE_VALUES
+
+    opted_in = make_client(allowed_event_types=SESSION_EVENT_TYPE_VALUES)
+    assert opted_in.post("/v1/session-events", json=uninstall, headers=WRITE).status_code == 202
+
+
+def test_12_allowed_event_types_config():
+    from gateway.config import Settings
+    from gateway.sc_types import DEFAULT_ALLOWED_EVENT_TYPES, SESSION_EVENT_TYPE_VALUES
+
+    base = {"GATEWAY_WRITE_KEY": "w-key-123456"}
+    assert Settings.from_env(base).allowed_event_types == DEFAULT_ALLOWED_EVENT_TYPES
+    assert Settings.from_env({**base, "ALLOWED_EVENT_TYPES": "all"}).allowed_event_types == SESSION_EVENT_TYPE_VALUES
+    assert Settings.from_env({**base, "ALLOWED_EVENT_TYPES": "QueuedCommand, 45"}).allowed_event_types == {44, 45}
+    assert 41 not in DEFAULT_ALLOWED_EVENT_TYPES and 100 not in DEFAULT_ALLOWED_EVENT_TYPES
+
+
 def test_12_native_command_uses_caller_group_path(client, fake):
     fake.restful["SendCommandToSession"] = lambda args: httpx.Response(401)
     fake.native["PageService.ashx/AddSessionEvents"] = lambda args: None
@@ -394,6 +417,31 @@ def test_16_save_user_validation_and_secrecy(make_client, fake, caplog):
         assert client.post("/v1/users/save", json=admin, headers=WRITE).status_code == 403
     assert "Secret-Pass-1" not in caplog.text
     assert fake.calls_to("native", "SecurityService.ashx/SaveUser") == []
+
+
+def test_16_user_management_is_disabled_by_default(make_client, fake):
+    client = make_client(allowed_user_roles=())
+    body = {"newUserName": "u", "password": "Secret-Pass-1"}
+    response = client.post("/v1/users/save", json=body, headers=WRITE)
+    assert response.status_code == 403
+    assert response.json() == {"message": "user management is disabled; set ALLOWED_USER_ROLES to enable it"}
+    assert client.post("/v1/users", json={"userName": "u", "password": "Secret-Pass-1"}, headers=WRITE).status_code == 403
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"newUserName": "SVC-GATEWAY", "password": "Secret-Pass-1"},
+        {"oldUserName": "svc-gateway", "newUserName": "other", "password": None, "passwordQuestion": None,
+         "displayName": "", "comment": "", "email": "", "roles": [], "forcePasswordChange": False},
+    ],
+)
+def test_16_service_account_cannot_be_targeted(client, fake, body):
+    response = client.post("/v1/users/save", json=body, headers=WRITE)
+    assert response.status_code == 403
+    assert "service account" in response.json()["message"]
+    assert fake.calls == []
 
 
 # ======================= backend consistency =======================

@@ -704,8 +704,8 @@ class Gateway:
     async def add_session_events(
         self, *, group_path: list[str], events: list[dict[str, Any]], forced: str | None = None
     ) -> Served[dict[str, Any]]:
-        allowed = self.settings.allowed_event_types
-        disallowed = sorted({event["eventType"] for event in events} - allowed) if allowed else []
+        # Fail closed: the configured (or conservative default) allowlist always applies.
+        disallowed = sorted({event["eventType"] for event in events} - self.settings.allowed_event_types)
         if disallowed:
             raise ForbiddenError(f"event types not allowed: {', '.join(map(str, disallowed))}")
         entries = []
@@ -813,9 +813,17 @@ class Gateway:
         force_password_change: bool,
         forced: str | None = None,
     ) -> Served[dict[str, Any]]:
+        # Fail closed: user management needs an explicit role allowlist ("*" = any role).
         allowed = self.settings.allowed_user_roles
-        if allowed and not set(roles) <= set(allowed):
+        if not allowed:
+            raise ForbiddenError("user management is disabled; set ALLOWED_USER_ROLES to enable it")
+        if "*" not in allowed and not set(roles) <= set(allowed):
             raise ForbiddenError(f"roles not allowed: {', '.join(sorted(set(roles) - set(allowed)))}")
+        service_account = self.settings.sc_username.casefold()
+        if service_account and service_account in {
+            name.casefold() for name in (old_user_name, new_user_name) if name
+        }:
+            raise ForbiddenError("the gateway's own service account cannot be created, changed or renamed")
 
         async def native() -> dict[str, Any]:
             # SecurityService.SaveUser argument order, as sent by the ScreenConnect admin UI.

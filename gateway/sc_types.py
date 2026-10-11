@@ -73,6 +73,22 @@ SESSION_EVENT_TYPES: dict[str, int] = {
 }
 SESSION_EVENT_TYPE_VALUES = frozenset(SESSION_EVENT_TYPES.values())
 
+# add_session_events default: nothing beyond what send_command/send_message/add_note/
+# run_toolbox_item already allow. Uninstall, reinstall, delete, license, disconnect,
+# elevation and logon types must be opted into with ALLOWED_EVENT_TYPES.
+DEFAULT_ALLOWED_EVENT_TYPES = frozenset(
+    SESSION_EVENT_TYPES[name]
+    for name in (
+        "AcknowledgedEvent",
+        "AddedNote",
+        "QueuedWake",
+        "QueuedCommand",
+        "QueuedMessage",
+        "QueuedGuestInfoUpdate",
+        "QueuedTool",
+    )
+)
+
 # SC.types.SessionDetailsItems (bit flags for GetSessionDetails' third argument)
 DETAILS_SESSION_INFO = 1
 DETAILS_GUEST_SCREENSHOT = 4

@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
-from .sc_types import event_type_value
+from .sc_types import DEFAULT_ALLOWED_EVENT_TYPES, SESSION_EVENT_TYPE_VALUES, event_type_value
 
 BackendPreference = Literal["restful-first", "native-first"]
 IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
@@ -34,8 +34,8 @@ class Settings:
     upstream_timeout_seconds: float = 30.0
     health_cache_seconds: int = 15
     request_deadline_seconds: float = 90.0
-    allowed_user_roles: tuple[str, ...] = ()
-    allowed_event_types: frozenset[int] = frozenset()
+    allowed_user_roles: tuple[str, ...] = ()  # empty = user management disabled; ("*",) = any role
+    allowed_event_types: frozenset[int] = DEFAULT_ALLOWED_EVENT_TYPES
 
     @property
     def restful_enabled(self) -> bool:
@@ -115,6 +115,10 @@ class Settings:
 
 
 def _event_types(value: str) -> frozenset[int]:
+    if not value:
+        return DEFAULT_ALLOWED_EVENT_TYPES
+    if value.lower() in ("all", "*"):
+        return SESSION_EVENT_TYPE_VALUES
     try:
         return frozenset(event_type_value(item.strip()) for item in value.split(",") if item.strip())
     except ValueError as exc:
