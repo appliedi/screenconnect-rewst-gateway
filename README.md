@@ -239,3 +239,5 @@ openapi.json
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
