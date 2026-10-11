@@ -34,7 +34,7 @@ from .service import Gateway, Served
 from .upstream.native import NativeClient
 from .upstream.restful import RestfulClient
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 logger = logging.getLogger("gateway")
 
 BACKEND_HEADER = "X-Gateway-Backend"

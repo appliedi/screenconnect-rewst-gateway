@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.1] - 2026-10-11
+
+### Security
+- **User management fails closed.** `create_user` and `save_user` return 403 until `ALLOWED_USER_ROLES`
+  is set (`*` allows any role). This prevents a write key from creating administrators or resetting
+  admin passwords by default. **Breaking:** set `ALLOWED_USER_ROLES` if you used `create_user`.
+- **The gateway's own service account** (`SC_USERNAME`) can never be created, changed or renamed
+  through `save_user`.
+- **`add_session_events` fails closed** to a safe default set of event types, instead of allowing every type.
+
 ## [1.4.0] - 2026-10-11
 
 Parity with both original Rewst ScreenConnect integrations (16 operations). Argument shapes
@@ -53,14 +63,6 @@ matrix in the README.
 
 ### Fixed
 - **Documentation of event types:** 44 is `QueuedCommand` and 70 is `RanCommand` (the command output).
-
-### Security
-- **User management fails closed.** `create_user` and `save_user` return 403 until `ALLOWED_USER_ROLES`
-  is set (`*` allows any role). This prevents a write key from creating administrators or resetting
-  admin passwords by default. **Breaking:** set `ALLOWED_USER_ROLES` if you used `create_user`.
-- **The gateway's own service account** (`SC_USERNAME`) can never be created, changed or renamed
-  through `save_user`.
-- **`add_session_events` fails closed** to a safe default set of event types, as described above.
 
 ## [1.3.0] - 2026-10-11
 
