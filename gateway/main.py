@@ -24,7 +24,7 @@ from .service import Gateway, Served
 from .upstream.native import NativeClient
 from .upstream.restful import RestfulClient
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 logger = logging.getLogger("gateway")
 
 BACKEND_HEADER = "X-Gateway-Backend"
@@ -304,7 +304,9 @@ def create_app(
         response: Response,
         path: Annotated[list[str], Query(min_length=1, description="Group path segments, outermost first. Repeat the parameter.")],
         session_type: Annotated[int, Query(alias="sessionType", ge=0, le=2)] = 2,
-        filter: Annotated[str, Query(description="ScreenConnect session filter expression")] = "",
+        filter: Annotated[
+            str, Query(description="Free-text search within the group, like the ScreenConnect web UI search box")
+        ] = "",
         limit: Annotated[int, Query(ge=1, le=10_000)] = 1000,
         backend: BackendParam = None,
     ):
@@ -313,7 +315,10 @@ def create_app(
     @v1.get("/sessions", operation_id="search_sessions", response_model=list[models.Session], tags=["sessions"])
     async def search_sessions(
         response: Response,
-        filter: Annotated[str | None, Query(description="ScreenConnect filter expression")] = None,
+        filter: Annotated[
+            str | None,
+            Query(description="ScreenConnect session filter expression, e.g. GuestMachineName LIKE 'SRV*' (restful backend only)"),
+        ] = None,
         name: Annotated[str | None, Query(description="Exact session name")] = None,
         session_type: Annotated[int | None, Query(alias="sessionType", ge=0, le=2)] = None,
         backend: BackendParam = None,

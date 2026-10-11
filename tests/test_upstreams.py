@@ -222,12 +222,25 @@ def test_search_requires_exactly_one_criterion(client):
     assert client.get("/v1/sessions", params={"name": "a", "filter": "b"}, headers=READ).status_code == 400
 
 
-def test_native_search_by_name_escapes(make_client, fake):
+def test_native_name_search_uses_text_search_then_exact_match(make_client, fake):
     client = make_client(backend_preference="native-first")
-    fake.native["PageService.ashx/GetLiveData"] = lambda args: live_data([raw_session()])
-    client.get("/v1/sessions", params={"name": "Bob's PC"}, headers=READ)
+    fake.native["PageService.ashx/GetLiveData"] = lambda args: live_data(
+        [raw_session("a", name="Bob's PC"), raw_session("b", name="Bob's PC 2")]
+    )
+    response = client.get("/v1/sessions", params={"name": "Bob's PC"}, headers=READ)
+    assert [s["sessionId"] for s in response.json()] == ["a"]
     info = fake.calls_to("native", "PageService.ashx/GetLiveData")[0][0]["HostSessionInfo"]
-    assert info["filter"] == "Name = 'Bob''s PC'"
+    assert info["filter"] == "Bob's PC"
+
+
+def test_filter_expressions_never_fall_back_to_native(client, fake):
+    fake.restful["GetSessionsByFilter"] = lambda args: httpx.Response(500)
+    response = client.get("/v1/sessions", params={"filter": "CustomProperty1 <> ''"}, headers=READ)
+    assert response.status_code == 502
+    assert fake.calls_to("native", "PageService.ashx/GetLiveData") == []
+    forced = client.get("/v1/sessions", params={"filter": "x", "backend": "native"}, headers=READ)
+    assert forced.status_code == 400
+    assert forced.json() == {"message": "filter expressions require the restful backend"}
 
 
 def test_create_user_native(client, fake):

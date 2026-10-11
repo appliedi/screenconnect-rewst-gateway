@@ -3,7 +3,7 @@
   "info": {
     "title": "ScreenConnect Gateway",
     "description": "Single REST API over ConnectWise ScreenConnect's built-in web API and the RESTful API Manager extension. All reads are GET. Responses carry `X-Gateway-Backend: restful|native`. Errors are always `{\"message\": \"...\"}`.",
-    "version": "1.1.0"
+    "version": "1.2.0"
   },
   "servers": [
     {
@@ -509,11 +509,11 @@
             "required": false,
             "schema": {
               "type": "string",
-              "description": "ScreenConnect session filter expression",
+              "description": "Free-text search within the group, like the ScreenConnect web UI search box",
               "default": "",
               "title": "Filter"
             },
-            "description": "ScreenConnect session filter expression"
+            "description": "Free-text search within the group, like the ScreenConnect web UI search box"
           },
           {
             "name": "limit",
@@ -684,10 +684,10 @@
                   "type": "null"
                 }
               ],
-              "description": "ScreenConnect filter expression",
+              "description": "ScreenConnect session filter expression, e.g. GuestMachineName LIKE 'SRV*' (restful backend only)",
               "title": "Filter"
             },
-            "description": "ScreenConnect filter expression"
+            "description": "ScreenConnect session filter expression, e.g. GuestMachineName LIKE 'SRV*' (restful backend only)"
           },
           {
             "name": "name",
@@ -3172,7 +3172,16 @@
                 "type": "null"
               }
             ],
-            "title": "Guestloggedonusername"
+            "title": "Guestloggedonusername",
+            "description": "First signed-in user, if any"
+          },
+          "loggedOnUsers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Loggedonusers",
+            "description": "All signed-in users (e.g. several on a terminal server)"
           },
           "operatingSystem": {
             "anyOf": [

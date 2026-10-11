@@ -121,7 +121,8 @@ Commands are asynchronous. `send_command` returns `202 {sessionId, queued: true}
 - **Request bodies** are capped at 1 MB (`413`). A chunked body without `Content-Length` is rejected (`411`).
 - **Upstream allowlist:** the gateway can call only the 17 methods in `gateway/allowlist.py` (11 restful + 6 native), plus the native login sequence (`TryLogin`, `GET /`). Clients check the allowlist before any network I/O, and tests enforce it.
 - **Injection:** company ids and names are single-quote-escaped (`'` → `''`) before they go into ScreenConnect filter expressions. Session ids must be GUIDs.
-  - The `filter` parameter on `GET /v1/sessions` and `/v1/session-groups/sessions` is passed through by design. Anyone with the read key can query any session.
+  - The `filter` parameter on `GET /v1/sessions` is a ScreenConnect filter expression, passed through by design and supported only by the restful backend; anyone with the read key can query any session.
+  - On `/v1/session-groups/sessions`, `filter` is the native API's free-text search, like the web UI search box. That API doesn't evaluate expressions.
 - **Audit log:** every non-GET request, including rejected ones, emits one JSON line on the `gateway.audit` logger with `time, endpoint, sessionId, clientIp, keyId, backend, status, result`. Request bodies are never logged. Lines for requests without a valid key are capped at 60/min so they can't flood the log; the overflow is counted in `suppressedKeyless` on the next line written.
 - **Redaction:** every log record from any logger, *including tracebacks*, is scrubbed of the configured secrets and of the native session cookies and anti-forgery token (registered when obtained).
   - Validation errors never echo submitted values, and the `create_user` password is a `SecretStr`.

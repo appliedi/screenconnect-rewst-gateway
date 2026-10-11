@@ -113,3 +113,28 @@ def test_restful_guest_info_is_mapped():
     )
     assert session["isOnline"] is True
     assert normalize_session({"SessionID": "s2"})["isOnline"] is None
+
+
+def test_logged_on_users_come_from_logon_sessions():
+    raw = {
+        "SessionID": "s1",
+        "GuestInfo": {"LoggedOnUserName": ""},
+        "LogonSessions": [
+            {"LogonSessionAttributes": 0xC0006, "DisplayName": "[Backstage]"},
+            {"LogonSessionAttributes": 0x7F0009, "DisplayName": "Console"},
+            {"LogonSessionAttributes": 0x7F0001, "DisplayName": "jdoe"},
+            {"LogonSessionAttributes": 0x7F0001, "DisplayName": "asmith"},
+            {"LogonSessionAttributes": 0x7F0001, "DisplayName": "jdoe"},
+        ],
+    }
+    session = normalize_session(raw)
+    assert session["loggedOnUsers"] == ["jdoe", "asmith"]
+    assert session["guestLoggedOnUserName"] == "jdoe"
+
+
+def test_logged_on_user_falls_back_to_legacy_fields():
+    login_screen_only = {"LogonSessions": [{"LogonSessionAttributes": 0x7F0009, "DisplayName": "Console"}]}
+    assert normalize_session(login_screen_only)["guestLoggedOnUserName"] is None
+    assert normalize_session(login_screen_only)["loggedOnUsers"] == []
+    legacy = {"GuestLoggedOnUserName": "olduser", "LogonSessions": []}
+    assert normalize_session(legacy)["guestLoggedOnUserName"] == "olduser"

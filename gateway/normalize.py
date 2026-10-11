@@ -8,6 +8,9 @@ from typing import Any
 CUSTOM_PROPERTY_COUNT = 8
 AGENT_PROCESS_TYPE = 2
 ACCESS_SESSION_TYPE = 2
+# LogonSessionAttributes bits, inferred from live data (not documented by ConnectWise):
+LOGON_INTERACTIVE_FLAG = 0x1  # a Windows logon session (absent on "[Backstage]")
+LOGON_NO_USER_FLAG = 0x8  # nobody signed in at that session (DisplayName "Console")
 
 
 def pad_custom_properties(values: Any) -> list[str]:
@@ -30,10 +33,29 @@ def _first(*values: Any) -> Any:
     return next((value for value in values if value not in (None, "")), None)
 
 
+def logged_on_users(raw: dict[str, Any]) -> list[str]:
+    """Signed-in users from LogonSessions. Current agents report users here rather
+    than in the legacy GuestLoggedOnUserName / GuestInfo.LoggedOnUserName fields."""
+    users: list[str] = []
+    for logon in raw.get("LogonSessions") or []:
+        attributes = logon.get("LogonSessionAttributes") or 0
+        name = logon.get("DisplayName") or ""
+        if (
+            attributes & LOGON_INTERACTIVE_FLAG
+            and not attributes & LOGON_NO_USER_FLAG
+            and name
+            and not name.startswith("[")
+            and name not in users
+        ):
+            users.append(name)
+    return users
+
+
 def normalize_session(raw: dict[str, Any]) -> dict[str, Any]:
     """Handles both upstream shapes: native has flat Guest* fields, restful nests them in GuestInfo."""
     properties = pad_custom_properties(raw.get("CustomPropertyValues"))
     guest = raw.get("GuestInfo") or {}
+    users = logged_on_users(raw)
     is_online = None
     if "ActiveConnections" in raw:
         is_online = any(
@@ -45,7 +67,8 @@ def normalize_session(raw: dict[str, Any]) -> dict[str, Any]:
         "name": raw.get("Name"),
         "sessionType": raw.get("SessionType"),
         "guestMachineName": _first(raw.get("GuestMachineName"), guest.get("MachineName")),
-        "guestLoggedOnUserName": _first(raw.get("GuestLoggedOnUserName"), guest.get("LoggedOnUserName")),
+        "guestLoggedOnUserName": _first(*users[:1], raw.get("GuestLoggedOnUserName"), guest.get("LoggedOnUserName")),
+        "loggedOnUsers": users,
         "operatingSystem": _first(raw.get("GuestOperatingSystemName"), guest.get("OperatingSystemName")),
         "company": properties[0],
         "site": properties[1],

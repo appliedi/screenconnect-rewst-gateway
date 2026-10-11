@@ -328,14 +328,20 @@ class Gateway:
                 raw = await self._restful_sessions_by_filter(filter_expression or "")
             return of_type([normalize_session(item) for item in raw])
 
+        if name is None:
+            # The native API's "filter" is the web UI's free-text search box, not an
+            # expression language, so expressions are restful-only (no silent empty fallback).
+            if forced == "native":
+                raise BadRequestError("filter expressions require the restful backend")
+            return await self._dispatch({"restful": restful}, forced=forced)
+
         async def native() -> list[dict[str, Any]]:
-            expression = f"Name = '{escape_filter_value(name)}'" if name is not None else filter_expression
             info = await self._live_data(
                 path=[self.settings.native_default_group],
                 session_type=2 if session_type is None else session_type,
-                filter_expression=expression or "",
+                filter_expression=name,  # free-text search, narrowed to exact names below
             )
-            return [normalize_session(raw) for raw in info.get("Sessions") or []]
+            return [normalize_session(raw) for raw in info.get("Sessions") or [] if raw.get("Name") == name]
 
         return await self._dispatch({"restful": restful, "native": native}, forced=forced)
 

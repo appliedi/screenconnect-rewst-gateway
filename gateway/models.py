@@ -48,7 +48,8 @@ class Session(CamelModel):
     name: str | None = None
     session_type: int | None = Field(None, description="0 Support, 1 Meeting, 2 Access")
     guest_machine_name: str | None = None
-    guest_logged_on_user_name: str | None = None
+    guest_logged_on_user_name: str | None = Field(None, description="First signed-in user, if any")
+    logged_on_users: list[str] = Field(default_factory=list, description="All signed-in users (e.g. several on a terminal server)")
     operating_system: str | None = None
     company: str = Field(description="Custom Property 1 (raw)")
     site: str = Field(description="Custom Property 2")
