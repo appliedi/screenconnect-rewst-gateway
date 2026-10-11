@@ -1,0 +1,147 @@
+"""Pure functions that shape upstream payloads into the gateway's API."""
+
+from __future__ import annotations
+
+from collections import Counter
+from typing import Any
+
+CUSTOM_PROPERTY_COUNT = 8
+AGENT_PROCESS_TYPE = 2
+ACCESS_SESSION_TYPE = 2
+
+
+def pad_custom_properties(values: Any) -> list[str]:
+    items = list(values or [])[:CUSTOM_PROPERTY_COUNT]
+    strings = ["" if value is None else str(value) for value in items]
+    return strings + [""] * (CUSTOM_PROPERTY_COUNT - len(strings))
+
+
+def escape_filter_value(value: str) -> str:
+    """ScreenConnect filter strings are single-quoted; quotes are escaped by doubling."""
+    return value.replace("'", "''")
+
+
+def normalize_session(raw: dict[str, Any], *, native: bool) -> dict[str, Any]:
+    properties = pad_custom_properties(raw.get("CustomPropertyValues"))
+    is_online = None
+    if native:
+        is_online = any(
+            connection.get("ProcessType") == AGENT_PROCESS_TYPE
+            for connection in raw.get("ActiveConnections") or []
+        )
+    return {
+        "sessionId": str(raw.get("SessionID") or ""),
+        "name": raw.get("Name"),
+        "sessionType": raw.get("SessionType"),
+        "guestMachineName": raw.get("GuestMachineName"),
+        "guestLoggedOnUserName": raw.get("GuestLoggedOnUserName"),
+        "operatingSystem": raw.get("GuestOperatingSystemName"),
+        "company": properties[0],
+        "site": properties[1],
+        "department": properties[2],
+        "deviceType": properties[3],
+        "customProperties": properties,
+        "isOnline": is_online,
+    }
+
+
+def normalize_event(raw: dict[str, Any]) -> dict[str, Any]:
+    event_id = raw.get("EventID")
+    return {
+        "eventId": None if event_id is None else str(event_id),
+        "eventType": raw.get("EventType"),
+        "time": raw.get("Time"),
+        "data": raw.get("Data"),
+    }
+
+
+def normalize_events(*event_lists: Any) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    events = []
+    for event_list in event_lists:
+        for raw in event_list or []:
+            event = normalize_event(raw)
+            if event["eventId"] is not None:
+                if event["eventId"] in seen:
+                    continue
+                seen.add(event["eventId"])
+            events.append(event)
+    return events
+
+
+def normalize_connection(raw: dict[str, Any]) -> dict[str, Any]:
+    connection_id = raw.get("ConnectionID")
+    return {
+        "connectionId": None if connection_id is None else str(connection_id),
+        "processType": raw.get("ProcessType"),
+        "participantName": raw.get("ParticipantName"),
+        "clientType": raw.get("ClientType"),
+        "networkAddress": raw.get("NetworkAddress"),
+        "events": normalize_events(raw.get("Events")),
+    }
+
+
+def normalize_group_summary(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": raw.get("Name") or "",
+        "sessionCount": raw.get("SessionCount") or 0,
+        "hasSubgroupExpression": bool(raw.get("HasSubgroupExpression")),
+    }
+
+
+def normalize_session_group(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": raw.get("Name"),
+        "sessionType": raw.get("SessionType"),
+        "sessionFilter": raw.get("SessionFilter"),
+        "subgroupExpressions": raw.get("SubgroupExpressions"),
+    }
+
+
+def _finalize_companies(counts: dict[str, int]) -> list[dict[str, Any]]:
+    companies = [
+        {"id": raw_id, "name": raw_id.strip(), "sessionCount": count}
+        for raw_id, count in counts.items()
+        if raw_id.strip()
+    ]
+    return sorted(companies, key=lambda company: (company["name"].casefold(), company["id"]))
+
+
+def companies_from_summaries(path_summaries: Any) -> list[dict[str, Any]]:
+    """Companies are the LAST non-empty level of PathSessionGroupSummaries."""
+    levels = [level for level in path_summaries or [] if level]
+    if not levels:
+        return []
+    counts: dict[str, int] = {}
+    for summary in levels[-1]:
+        raw_id = summary.get("Name")
+        if isinstance(raw_id, str):
+            counts[raw_id] = counts.get(raw_id, 0) + int(summary.get("SessionCount") or 0)
+    return _finalize_companies(counts)
+
+
+def companies_from_sessions(sessions: Any) -> list[dict[str, Any]]:
+    counts = Counter(
+        pad_custom_properties(session.get("CustomPropertyValues"))[0]
+        for session in sessions or []
+        if session.get("SessionType") == ACCESS_SESSION_TYPE
+    )
+    return _finalize_companies(dict(counts))
+
+
+def build_command(command: str, shell: str, timeout_ms: int | None) -> str:
+    prefix = ""
+    if shell == "powershell":
+        prefix += "#!ps\n"
+    if timeout_ms is not None:
+        prefix += f"#timeout={timeout_ms}\n"
+    return prefix + command
+
+
+def merge_custom_properties(current: list[str], changes: dict[int, str]) -> list[str]:
+    merged = pad_custom_properties(current)
+    for index, value in changes.items():
+        if not 0 <= index < CUSTOM_PROPERTY_COUNT:
+            raise ValueError(f"custom property index {index} out of range")
+        merged[index] = value
+    return merged
