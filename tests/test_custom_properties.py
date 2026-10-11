@@ -81,3 +81,14 @@ def test_create_session_maps_named_properties(client, fake):
     assert fake.calls_to("restful", "CreateSession") == [
         [2, "New PC", False, None, ["Acme", "", "", "Laptop", "", "", "", ""]]
     ]
+
+
+def test_create_user_role_allowlist(make_client, fake):
+    fake.native["SecurityService.ashx/SaveUser"] = lambda args: None
+    client = make_client(allowed_user_roles=("Technician",))
+    ok = client.post("/v1/users", json={"userName": "t1", "password": "Pw-123456!", "roles": ["Technician"]}, headers=WRITE)
+    assert ok.status_code == 201
+    denied = client.post("/v1/users", json={"userName": "t2", "password": "Pw-123456!", "roles": ["Administrator"]}, headers=WRITE)
+    assert denied.status_code == 403
+    assert denied.json() == {"message": "roles not allowed: Administrator"}
+    assert len(fake.calls_to("native", "SecurityService.ashx/SaveUser")) == 1

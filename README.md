@@ -50,9 +50,10 @@ Behind a proxy, `ALLOWED_SOURCE_IPS` should see the real client IP. Set uvicorn'
 | `ALLOWED_SOURCE_IPS` | no | – | Comma-separated CIDRs; others get 403 (`/health` exempt) |
 | `PORT` | no | `8080` | |
 | `NATIVE_DEFAULT_GROUP` | no | `All Machines` | Group used by native calls that need one but get none from the caller (search, get-by-id, details, custom-property writes) |
+| `ALLOWED_USER_ROLES` | no | – | Comma-separated roles `POST /v1/users` may assign; others get 403. Unset = any role |
 | `TLS_CERT_FILE`, `TLS_KEY_FILE` | no | – | Serve TLS directly |
 
-If a backend's credentials are missing, that backend is disabled at startup. A warning is logged and `/health` reports it.
+If a backend's credentials are missing, that backend is disabled at startup. A warning is logged and `/health` reports it as `enabled: false`.
 
 ## Rewst setup
 
@@ -96,18 +97,45 @@ Commands are asynchronous. `send_command` returns `202 {sessionId, queued: true}
 
 ## Security
 
-- `X-Api-Key` is compared in constant time, and both keys are checked on every request. The read key can only `GET`. The write key can do everything. `/health` and `/openapi.json` need no key (`ALLOWED_SOURCE_IPS` still applies to `/openapi.json`).
-- Rate limits: 120 reads/min and 10 writes/min per key (sliding window, `429` with `Retry-After`).
+### Read this before deploying
+
+- **The write key is the keys to the kingdom.** It can run arbitrary commands on every machine the service account can reach, and `POST /v1/users` can create ScreenConnect users. Store it like a domain-admin credential, give it only to the Rewst workflows that need it, and rotate it if it leaks.
+- **Give the ScreenConnect service account the least privilege that works.** The gateway can only do what that account is allowed to do. If you don't need `create_user`, don't give the account user-management rights. If you do, set `ALLOWED_USER_ROLES` so a leaked write key can't mint administrators.
+- **Always serve over HTTPS.** API keys travel in a header.
+- **Set `ALLOWED_SOURCE_IPS`** to Rewst's egress ranges if you can.
+- **Behind a reverse proxy**, set `FORWARDED_ALLOW_IPS` to the proxy's address only. Never combine `FORWARDED_ALLOW_IPS=*` with `ALLOWED_SOURCE_IPS` when the gateway is reachable other than through the proxy: clients could spoof `X-Forwarded-For` and walk past the allowlist. On platforms whose proxy IPs aren't fixed (e.g. Azure App Service), use the platform's own access restrictions instead.
+- **Never commit `.env`.** It is in `.gitignore` and `.dockerignore`. Pass secrets as environment variables or through your platform's secret store.
+
+### What the gateway enforces
+
+- `X-Api-Key` is compared in constant time, and both keys are checked on every request. The read key can only `GET`; the write key can do everything.
+  - The key is checked **before routing**, so unauthenticated requests never have their body parsed. Unknown paths return 401, not 404.
+  - Only `/health` and `/openapi.json` need no key. `ALLOWED_SOURCE_IPS` still applies to `/openapi.json`.
+- **Rate limits:** 120 reads/min and 10 writes/min per key (sliding window, `429` with `Retry-After`).
+- **Request bodies** are capped at 1 MB (`413`). A chunked body without `Content-Length` is rejected (`411`).
 - **Upstream allowlist:** the gateway can call only the 17 methods in `gateway/allowlist.py` (11 restful + 6 native), plus the native login sequence (`TryLogin`, `GET /`). Clients check the allowlist before any network I/O, and tests enforce it.
-- **Audit log:** every non-GET request, including rejected ones, emits one JSON line on the `gateway.audit` logger with `time, endpoint, sessionId, keyId, backend, status, result`. Request bodies are never logged.
-- **Redaction:** every log record from any logger is scrubbed of configured secrets and of the native session cookies and anti-forgery token (which are registered when obtained). Validation errors never echo submitted values, and the `create_user` password is a `SecretStr`.
-- Upstream timeout is 30 s. The native login is single-flight: concurrent requests share one login, and on 401/403/redirect the client re-logs in once and retries.
-- The container runs as a non-root user.
+- **Injection:** company ids and names are single-quote-escaped (`'` → `''`) before they go into ScreenConnect filter expressions. Session ids must be GUIDs.
+  - The `filter` parameter on `GET /v1/sessions` and `/v1/session-groups/sessions` is passed through by design. Anyone with the read key can query any session.
+- **Audit log:** every non-GET request, including rejected ones, emits one JSON line on the `gateway.audit` logger with `time, endpoint, sessionId, clientIp, keyId, backend, status, result`. Request bodies are never logged. Lines for requests without a valid key are capped at 60/min so they can't flood the log.
+- **Redaction:** every log record from any logger, *including tracebacks*, is scrubbed of the configured secrets and of the native session cookies and anti-forgery token (registered when obtained).
+  - Validation errors never echo submitted values, and the `create_user` password is a `SecretStr`.
+- **`/health` is unauthenticated, so it is kept cheap and quiet.**
+  - It reports only `ok`/`enabled` per backend; failure details go to the log.
+  - Probes are single-flight and cached for 15 s, so a burst of requests causes at most one probe per backend.
+- **Service-account lockout protection:** after a failed native login, the gateway waits 60 s before trying again. Requests made in the meantime fail fast, or fall back to restful.
+  - The login itself is single-flight: concurrent requests share one login. On 401/403/redirect the client re-logs in once and retries, but not within 30 s of a successful login (a 403 then means permission denied, and re-logging in would reuse the TOTP code).
+- **Responses** carry `Cache-Control: no-store`, so a CDN or proxy won't cache company data. Shared caches don't treat `X-Api-Key` like `Authorization`.
+- **Upstream calls:** 30 s timeout per call and a 90 s overall deadline per request (retries, re-login and fallback included); redirects are never followed and are treated as failures, and the upstream host is fixed by `SC_BASE_URL`, so callers can't redirect requests elsewhere (no SSRF).
+- **Container:** runs as a non-root user (uid 10001). Dependencies are installed from `requirements.lock` with `--require-hashes`, which a test keeps identical to `uv.lock`. The base image is the `python:3.12-slim` tag rather than a digest, so rebuilds pick up OS security patches.
+
+### Reporting a vulnerability
+
+Please open a GitHub security advisory on this repository rather than a public issue.
 
 ## Tests
 
 ```bash
-uv run pytest      # 73 tests
+uv run pytest
 ```
 
 Upstreams are mocked with `httpx.MockTransport` (a fake ScreenConnect that asserts every call is allowlisted). Coverage:
@@ -124,6 +152,8 @@ Upstreams are mocked with `httpx.MockTransport` (a fake ScreenConnect that asser
 - drift check between the committed `openapi.json` and the generated spec
 
 Regenerate the spec after API changes: `uv run python scripts/export_openapi.py`.
+
+After changing dependencies, refresh the Docker lockfile: `uv export --frozen --no-dev --no-emit-project --format requirements-txt -o requirements.lock`.
 
 ## Live-instance verification (must-test)
 

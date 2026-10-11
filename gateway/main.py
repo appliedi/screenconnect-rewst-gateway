@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Any, Literal
 
 import httpx
-from fastapi import APIRouter, Depends, FastAPI, Path, Query, Request, Response
+from fastapi import APIRouter, FastAPI, Path, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
@@ -28,6 +28,8 @@ logger = logging.getLogger("gateway")
 
 BACKEND_HEADER = "X-Gateway-Backend"
 OPEN_PATHS = {"/health"}
+AUTH_EXEMPT_PATHS = {"/health", "/openapi.json"}
+MAX_BODY_BYTES = 1_000_000
 READ_LIMIT_PER_MINUTE = 120
 WRITE_LIMIT_PER_MINUTE = 10
 
@@ -69,11 +71,14 @@ def create_app(
         settings.sc_totp_secret,
         timeout=settings.upstream_timeout_seconds,
         transport=native_transport,
+        clock=clock,
     )
     gateway = Gateway(settings, restful, native, clock=clock)
     limiter = RateLimiter(
         {"read": READ_LIMIT_PER_MINUTE, "write": WRITE_LIMIT_PER_MINUTE}, clock=clock
     )
+    # Rejected keyless writes are still audited, but capped so they can't flood the log.
+    anonymous_audit_limiter = RateLimiter({"audit": 60}, clock=clock)
     health_cache: dict[str, tuple[float, dict[str, Any]]] = {}
     health_lock = asyncio.Lock()
 
@@ -96,14 +101,17 @@ def create_app(
 
     # ---------- errors: always {"message": ...} ----------
 
-    @app.exception_handler(GatewayError)
-    async def gateway_error_handler(_: Request, exc: GatewayError) -> JSONResponse:
+    def error_response(exc: GatewayError) -> JSONResponse:
         headers = {BACKEND_HEADER: exc.backend or "none"}
         if isinstance(exc, RateLimitedError):
             headers["Retry-After"] = str(exc.retry_after)
         if exc.status_code >= 500:
             logger.warning("request failed: %s (%s)", exc.message, type(exc).__name__)
         return JSONResponse({"message": exc.message}, status_code=exc.status_code, headers=headers)
+
+    @app.exception_handler(GatewayError)
+    async def gateway_error_handler(_: Request, exc: GatewayError) -> JSONResponse:
+        return error_response(exc)
 
     @app.exception_handler(RequestValidationError)
     async def validation_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
@@ -123,15 +131,32 @@ def create_app(
         logger.error("unhandled error: %s", type(exc).__name__)
         return JSONResponse({"message": "internal server error"}, status_code=500)
 
-    # ---------- middleware: source IP, backend header, audit ----------
+    # ---------- middleware: source IP, body size, auth, headers, audit ----------
+
+    def precheck(request: Request) -> JSONResponse | None:
+        """Runs before routing, so rejected requests never have their body parsed."""
+        path = request.url.path
+        host = request.client.host if request.client else None
+        if path not in OPEN_PATHS and not source_ip_allowed(settings, host):
+            return JSONResponse({"message": "source IP not allowed"}, status_code=403)
+        if request.method not in READ_METHODS:
+            length = request.headers.get("content-length")
+            if length is None and "transfer-encoding" in request.headers:
+                return JSONResponse({"message": "Content-Length required"}, status_code=411)
+            if length is not None and (not length.isdigit() or int(length) > MAX_BODY_BYTES):
+                return JSONResponse({"message": "request body too large"}, status_code=413)
+        if path not in AUTH_EXEMPT_PATHS:
+            try:
+                authorize(request)
+            except GatewayError as exc:
+                return error_response(exc)
+        return None
 
     @app.middleware("http")
     async def gateway_middleware(request: Request, call_next):
         is_write = request.method not in READ_METHODS
-        host = request.client.host if request.client else None
-        if request.url.path not in OPEN_PATHS and not source_ip_allowed(settings, host):
-            response = JSONResponse({"message": "source IP not allowed"}, status_code=403)
-        else:
+        response = precheck(request)
+        if response is None:
             try:
                 response = await call_next(request)
             except Exception:
@@ -139,18 +164,23 @@ def create_app(
                     _audit(request, 500, None)
                 raise
         response.headers.setdefault(BACKEND_HEADER, "none")
+        response.headers["Cache-Control"] = "no-store"
         if is_write:
             _audit(request, response.status_code, response.headers.get(BACKEND_HEADER))
         return response
 
     def _audit(request: Request, status_code: int, backend: str | None) -> None:
+        key_id = getattr(request.state, "key_id", None)
+        if key_id is None and anonymous_audit_limiter.hit("anonymous", "audit") is not None:
+            return
         route = request.scope.get("route")
         audit_write(
             endpoint=f"{request.method} {getattr(route, 'path', request.url.path)}",
             session_id=request.scope.get("path_params", {}).get("sessionId"),
-            key_id=getattr(request.state, "key_id", None),
+            key_id=key_id,
             backend=None if backend == "none" else backend,
             status_code=status_code,
+            client_ip=request.client.host if request.client else None,
         )
 
     # ---------- auth + rate limiting ----------
@@ -197,7 +227,7 @@ def create_app(
             health_cache["health"] = (clock() + settings.health_cache_seconds, body)
             return body
 
-    v1 = APIRouter(prefix="/v1", dependencies=[Depends(authorize)])
+    v1 = APIRouter(prefix="/v1")
 
     # ---------- reads ----------
 

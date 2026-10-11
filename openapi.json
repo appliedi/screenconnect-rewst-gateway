@@ -2404,17 +2404,6 @@
           "enabled": {
             "type": "boolean",
             "title": "Enabled"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
           }
         },
         "type": "object",

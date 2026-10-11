@@ -89,20 +89,39 @@ def test_native_login_with_totp(make_client, fake):
     assert len(code) == 6 and pyotp.TOTP(secret).verify(code, valid_window=1)
 
 
-def test_native_relogin_once_on_expired_session(client, fake):
+def test_native_relogin_once_on_expired_session(client, fake, clock):
     fake.native["SessionGroupService.ashx/GetSessionGroups"] = lambda args: []
     assert client.get("/v1/session-groups", headers=READ).status_code == 200
+    clock.now += 600
     fake.expire_next_native_call = True
     assert client.get("/v1/session-groups", headers=READ).status_code == 200
     assert len(fake.logins) == 2
     assert len(fake.calls_to("native", "SessionGroupService.ashx/GetSessionGroups")) == 3
 
 
-def test_native_gives_up_after_one_relogin(client, fake):
+def test_native_gives_up_after_one_relogin(client, fake, clock):
+    fake.native["PageService.ashx/GetLiveData"] = lambda args: live_data()
+    client.get("/v1/session-groups/sessions?path=x", headers=READ)
+    clock.now += 600
     fake.native["SessionGroupService.ashx/GetSessionGroups"] = lambda args: httpx.Response(403)
     response = client.get("/v1/session-groups", headers=READ)
     assert response.status_code == 502
     assert len(fake.logins) == 2
+
+
+def test_403_right_after_login_does_not_relogin(client, fake):
+    # Permission denied, not an expired session: re-logging in would only reuse the TOTP code.
+    fake.native["SessionGroupService.ashx/GetSessionGroups"] = lambda args: httpx.Response(403)
+    assert client.get("/v1/session-groups", headers=READ).status_code == 502
+    assert len(fake.logins) == 1
+
+
+def test_restful_redirect_on_write_is_not_success(client, fake):
+    fake.restful["SendCommandToSession"] = lambda args: httpx.Response(302, headers={"location": "/Login"})
+    fake.native["PageService.ashx/AddSessionEvents"] = lambda args: None
+    response = client.post(f"/v1/sessions/{SESSION_ID}/commands", json={"command": "whoami"}, headers=WRITE)
+    assert response.status_code == 202
+    assert response.headers["X-Gateway-Backend"] == "native"  # redirect means restful never ran it
 
 
 def test_native_logins_are_serialized():
@@ -225,3 +244,22 @@ def test_create_user_native(client, fake):
         ["InternalMembershipProvider", None, "tech1", "Sup3r$ecret!", "Sup3r$ecret!", "", "Tech One", "",
          "t1@example.com", ["Technician"], True]
     ]
+
+
+def test_failed_login_cools_down_to_protect_the_service_account(make_client, fake, clock):
+    original = fake.handle_native
+
+    def bad_password(request):
+        if request.url.path.endswith("/TryLogin"):
+            fake.logins.append([])
+            return httpx.Response(403)
+        return original(request)
+
+    fake.handle_native = bad_password  # type: ignore[method-assign]
+    client = make_client()
+    for _ in range(5):
+        assert client.get("/v1/session-groups", headers=READ).status_code == 502
+    assert len(fake.logins) == 1
+    clock.now += 61
+    client.get("/v1/session-groups", headers=READ)
+    assert len(fake.logins) == 2

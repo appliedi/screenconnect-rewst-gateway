@@ -21,9 +21,10 @@ from ..errors import (
 logger = logging.getLogger("gateway.upstream")
 
 
-def check_status(response: httpx.Response, backend: str, *, redirect_is_auth: bool = False) -> httpx.Response:
+def check_status(response: httpx.Response, backend: str) -> httpx.Response:
     status = response.status_code
-    if status in (401, 403) or (redirect_is_auth and 300 <= status < 400):
+    # Redirects aren't followed, so a 3xx means nothing ran (usually a login redirect).
+    if status in (401, 403) or 300 <= status < 400:
         raise UpstreamAuthError(f"{backend} upstream rejected the credentials (HTTP {status})", backend=backend)
     if status in (404, 405):
         raise UpstreamMissingMethodError(f"{backend} upstream method not found (HTTP {status})", backend=backend)
@@ -51,14 +52,13 @@ async def send_with_policy(
     *,
     backend: str,
     idempotent: bool,
-    redirect_is_auth: bool = False,
 ) -> httpx.Response:
     """Reads get one retry on 5xx/timeout; writes are never auto-retried."""
     attempts = 2 if idempotent else 1
     for attempt in range(1, attempts + 1):
         try:
             response = await guarded(send, backend)
-            return check_status(response, backend, redirect_is_auth=redirect_is_auth)
+            return check_status(response, backend)
         except RETRYABLE_READ_ERRORS as exc:
             if attempt == attempts:
                 raise

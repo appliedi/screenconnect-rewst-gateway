@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Generic, Literal, TypeVar
 
 from .config import Settings
-from .errors import BadRequestError, GatewayError, NotFoundError
+from .errors import BadRequestError, ForbiddenError, GatewayError, NotFoundError, UpstreamTimeoutError
 from .normalize import (
     build_command,
     companies_from_sessions,
@@ -74,6 +74,20 @@ class Gateway:
         *,
         forced: str | None = None,
         write: bool = False,
+    ) -> Served[T]:
+        # Per-call timeouts x retries x re-login x fallback could otherwise stack to minutes.
+        try:
+            async with asyncio.timeout(self.settings.request_deadline_seconds):
+                return await self._dispatch_with_fallback(operations, forced=forced, write=write)
+        except TimeoutError as exc:
+            raise UpstreamTimeoutError("request deadline exceeded") from exc
+
+    async def _dispatch_with_fallback(
+        self,
+        operations: dict[str, Operation[T]],
+        *,
+        forced: str | None,
+        write: bool,
     ) -> Served[T]:
         if forced is not None:
             if forced not in operations:
@@ -152,15 +166,18 @@ class Gateway:
     async def probe(self, backend: str) -> dict[str, Any]:
         client = self._clients[backend]
         if not client.enabled:
-            return {"ok": False, "enabled": False, "error": "not configured"}
+            return {"ok": False, "enabled": False}
         try:
-            if backend == "restful":
-                await self.restful.call("GetSessionsByName", ["__gateway_health_probe__"], idempotent=True)
-            else:
-                await self.native.call("SessionGroupService.ashx/GetSessionGroups", [], idempotent=True)
-        except GatewayError as exc:
-            return {"ok": False, "enabled": True, "error": exc.message}
-        return {"ok": True, "enabled": True, "error": None}
+            async with asyncio.timeout(self.settings.request_deadline_seconds):
+                if backend == "restful":
+                    await self.restful.call("GetSessionsByName", ["__gateway_health_probe__"], idempotent=True)
+                else:
+                    await self.native.call("SessionGroupService.ashx/GetSessionGroups", [], idempotent=True)
+        except (GatewayError, TimeoutError) as exc:
+            # Details stay in the log: /health is unauthenticated.
+            logger.warning("%s health probe failed: %s", backend, getattr(exc, "message", "deadline exceeded"))
+            return {"ok": False, "enabled": True}
+        return {"ok": True, "enabled": True}
 
     # ---------- companies ----------
 
@@ -474,6 +491,10 @@ class Gateway:
         force_password_change: bool,
         forced: str | None = None,
     ) -> Served[dict[str, Any]]:
+        allowed = self.settings.allowed_user_roles
+        if allowed and not set(roles) <= set(allowed):
+            raise ForbiddenError(f"roles not allowed: {', '.join(sorted(set(roles) - set(allowed)))}")
+
         async def native() -> dict[str, Any]:
             args = [
                 "InternalMembershipProvider",

@@ -24,7 +24,6 @@ class ErrorMessage(BaseModel):
 class BackendHealth(CamelModel):
     ok: bool
     enabled: bool
-    error: str | None = None
 
 
 class Health(CamelModel):

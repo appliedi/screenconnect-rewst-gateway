@@ -52,6 +52,11 @@ def install_redaction() -> None:
         redacted = secret_registry.redact(message)
         if redacted != message or record.args:
             record.msg, record.args = redacted, None
+        # Formatters reuse a pre-set exc_text, so tracebacks get redacted too.
+        if record.exc_info and not record.exc_text:
+            record.exc_text = secret_registry.redact(logging.Formatter().formatException(record.exc_info))
+        if record.stack_info:
+            record.stack_info = secret_registry.redact(record.stack_info)
         return record
 
     logging.setLogRecordFactory(factory)
@@ -73,6 +78,7 @@ def audit_write(
     key_id: str | None,
     backend: str | None,
     status_code: int,
+    client_ip: str | None,
 ) -> None:
     """One JSON line per write. Never pass request bodies here."""
     audit_logger.info(
@@ -81,6 +87,7 @@ def audit_write(
                 "time": datetime.now(UTC).isoformat(),
                 "endpoint": endpoint,
                 "sessionId": session_id,
+                "clientIp": client_ip,
                 "keyId": key_id,
                 "backend": backend,
                 "status": status_code,

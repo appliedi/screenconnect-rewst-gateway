@@ -6,6 +6,8 @@ import asyncio
 import logging
 import re
 import secrets
+import time
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -20,6 +22,9 @@ from .http import check_status, guarded, parse_json, send_with_policy
 logger = logging.getLogger("gateway.native")
 
 LOGIN_PATH = "/Services/AuthenticationService.ashx/TryLogin"
+LOGIN_FAILURE_COOLDOWN_SECONDS = 60.0
+# A 403 this soon after a fresh login is a permission problem, not an expired session.
+FRESH_LOGIN_SECONDS = 30.0
 _ANTI_FORGERY_RE = re.compile(r"""["']?antiForgeryToken["']?\s*[:=]\s*["']([^"']+)["']""")
 
 
@@ -40,6 +45,7 @@ class NativeClient:
         *,
         timeout: float = 30.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ):
         self.enabled = bool(base_url and username and password)
         self._username = username
@@ -55,6 +61,9 @@ class NativeClient:
         self._anti_forgery_token: str | None = None
         self._generation = 0
         self._login_lock = asyncio.Lock()
+        self._clock = clock
+        self._login_blocked_until = 0.0
+        self._last_login_at: float | None = None
 
     async def call(self, method: str, args: list[Any], *, idempotent: bool) -> Any:
         if self._client is None:
@@ -78,13 +87,15 @@ class NativeClient:
 
             try:
                 response = await send_with_policy(
-                    send, backend=self.name, idempotent=idempotent, redirect_is_auth=True
+                    send, backend=self.name, idempotent=idempotent
                 )
                 return parse_json(response, self.name)
             except UpstreamAuthError:
                 # 401/403 means the call was not executed, so a single re-login + retry
-                # is safe even for writes.
-                if auth_attempt == 2:
+                # is safe even for writes. Skip it right after a login: re-logging in
+                # would not help and could reuse the same TOTP code.
+                fresh = self._last_login_at is not None and self._clock() - self._last_login_at < FRESH_LOGIN_SECONDS
+                if auth_attempt == 2 or fresh:
                     raise
                 logger.info("native session rejected; re-authenticating")
                 await self._login(stale_generation=generation)
@@ -97,35 +108,46 @@ class NativeClient:
         async with self._login_lock:
             if self._anti_forgery_token is not None and self._generation != stale_generation:
                 return
-            self._anti_forgery_token = None
-            client.cookies.clear()
-            code = self._totp.now() if self._totp else ""
-            headers = {"Origin": self._origin}
+            # Don't hammer TryLogin with bad credentials: that locks the service account.
+            if self._clock() < self._login_blocked_until:
+                raise UpstreamAuthError("native login failed recently; waiting before retrying", backend=self.name)
+            try:
+                await self._attempt_login(client)
+            except UpstreamAuthError:
+                self._login_blocked_until = self._clock() + LOGIN_FAILURE_COOLDOWN_SECONDS
+                raise
 
-            login = await guarded(
-                lambda: client.post(
-                    LOGIN_PATH,
-                    json=[self._username, self._password, code, True, secrets.token_hex(16)],
-                    headers=headers,
-                ),
-                self.name,
+    async def _attempt_login(self, client: httpx.AsyncClient) -> None:
+        self._anti_forgery_token = None
+        client.cookies.clear()
+        code = self._totp.now() if self._totp else ""
+        headers = {"Origin": self._origin}
+
+        login = await guarded(
+            lambda: client.post(
+                LOGIN_PATH,
+                json=[self._username, self._password, code, True, secrets.token_hex(16)],
+                headers=headers,
+            ),
+            self.name,
+        )
+        if login.status_code >= 300:
+            raise UpstreamAuthError(f"native login failed (HTTP {login.status_code})", backend=self.name)
+        self._register_cookie_secrets()
+
+        page = check_status(await guarded(lambda: client.get("/", headers=headers), self.name), self.name)
+        token = extract_anti_forgery_token(page.text)
+        if not token:
+            raise UpstreamAuthError(
+                "native login failed: anti-forgery token not found (check credentials/TOTP)",
+                backend=self.name,
             )
-            if login.status_code >= 300:
-                raise UpstreamAuthError(f"native login failed (HTTP {login.status_code})", backend=self.name)
-            self._register_cookie_secrets()
-
-            page = check_status(await guarded(lambda: client.get("/", headers=headers), self.name), self.name)
-            token = extract_anti_forgery_token(page.text)
-            if not token:
-                raise UpstreamAuthError(
-                    "native login failed: anti-forgery token not found (check credentials/TOTP)",
-                    backend=self.name,
-                )
-            secret_registry.add(token)
-            self._register_cookie_secrets()
-            self._anti_forgery_token = token
-            self._generation += 1
-            logger.info("native login succeeded")
+        secret_registry.add(token)
+        self._register_cookie_secrets()
+        self._anti_forgery_token = token
+        self._generation += 1
+        self._last_login_at = self._clock()
+        logger.info("native login succeeded")
 
     def _register_cookie_secrets(self) -> None:
         assert self._client is not None

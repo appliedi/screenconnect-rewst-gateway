@@ -98,7 +98,7 @@ def test_health_reports_disabled_backend(make_client, fake):
     client = make_client(sc_password="")
     fake.restful["GetSessionsByName"] = lambda args: []
     body = client.get("/health").json()
-    assert body["native"] == {"ok": False, "enabled": False, "error": "not configured"}
+    assert body["native"] == {"ok": False, "enabled": False}
     assert body["status"] == "ok"
 
 
@@ -134,3 +134,18 @@ def test_write_falls_back_on_auth_failure(client, fake):
     assert fake.calls_to("native", "PageService.ashx/AddSessionEvents") == [
         [["Servers"], [{"SessionID": SESSION_ID, "EventType": 44, "Data": "#!ps\n#timeout=60000\nGet-Process"}]]
     ]
+
+
+def test_overall_deadline(make_client, fake):
+    import asyncio
+
+    async def slow(request):
+        await asyncio.sleep(0.3)
+        return httpx.Response(500)
+
+    fake.handle_restful = slow  # type: ignore[method-assign]
+    fake.handle_native = slow  # type: ignore[method-assign]
+    client = make_client(request_deadline_seconds=0.2)
+    response = client.get(f"/v1/sessions/{SESSION_ID}", headers=READ)
+    assert response.status_code == 504
+    assert response.json() == {"message": "request deadline exceeded"}

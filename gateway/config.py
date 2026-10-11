@@ -31,6 +31,8 @@ class Settings:
     native_default_group: str = "All Machines"
     upstream_timeout_seconds: float = 30.0
     health_cache_seconds: int = 15
+    request_deadline_seconds: float = 90.0
+    allowed_user_roles: tuple[str, ...] = ()
 
     @property
     def restful_enabled(self) -> bool:
@@ -104,4 +106,5 @@ class Settings:
             allowed_source_ips=networks,
             port=int(get("PORT", "8080")),
             native_default_group=get("NATIVE_DEFAULT_GROUP", "All Machines"),
+            allowed_user_roles=tuple(role.strip() for role in get("ALLOWED_USER_ROLES").split(",") if role.strip()),
         )

@@ -80,7 +80,8 @@ def test_audit_log_for_writes_without_sensitive_content(client, fake, caplog):
     assert command["keyId"] == "write"
     assert command["backend"] == "restful"
     assert command["result"] == "ok" and command["status"] == 202
-    assert set(command) == {"time", "endpoint", "sessionId", "keyId", "backend", "status", "result"}
+    assert set(command) == {"time", "endpoint", "sessionId", "clientIp", "keyId", "backend", "status", "result"}
+    assert command["clientIp"] == "127.0.0.1"
     assert user["endpoint"] == "POST /v1/users" and user["backend"] == "native"
     assert denied["keyId"] == "read" and denied["status"] == 403 and denied["result"] == "error"
     assert "secret-cmd" not in caplog.text
@@ -114,3 +115,39 @@ def test_openapi_contract(client):
                 if param["name"] == "backend":
                     assert param.get("required", False) is False
     assert spec["paths"]["/v1/sessions/{sessionId}/commands"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+
+
+def test_tracebacks_are_redacted(caplog):
+    create_app(Settings(read_key="a-read-key-123", write_key=WRITE_KEY, restful_secret=RESTFUL_SECRET))
+    with caplog.at_level(logging.ERROR):
+        try:
+            raise RuntimeError(f"upstream said {RESTFUL_SECRET}")
+        except RuntimeError:
+            logging.getLogger("uvicorn.error").exception("Exception in ASGI application")
+    assert RESTFUL_SECRET not in caplog.text
+    assert "upstream said ***" in caplog.text
+
+
+def test_keyless_audit_lines_are_capped(client, caplog):
+    with caplog.at_level(logging.INFO):
+        for _ in range(70):
+            client.post(f"/v1/sessions/{SESSION_ID}/notes", json={"note": "x"})
+    assert len([r for r in caplog.records if r.name == "gateway.audit"]) == 60
+
+
+def test_docker_lockfile_matches_uv_lock():
+    import shutil
+    import subprocess
+
+    import pytest
+
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv not installed")
+    root = Path(__file__).parent.parent
+    expected = subprocess.run(
+        [uv, "export", "--frozen", "--no-dev", "--no-emit-project", "--format", "requirements-txt", "--no-header"],
+        cwd=root, capture_output=True, text=True, check=True,
+    ).stdout
+    committed = (root / "requirements.lock").read_text()
+    assert expected.strip() in committed, "regenerate requirements.lock (see README)"

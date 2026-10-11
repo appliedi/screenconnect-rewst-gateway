@@ -1,3 +1,4 @@
+import httpx
 from conftest import READ, SESSION_ID, WRITE, raw_session
 
 from gateway.config import ConfigError, Settings
@@ -13,8 +14,8 @@ def test_health_needs_no_key(client, fake):
     assert response.status_code == 200
     assert response.json() == {
         "status": "ok",
-        "restful": {"ok": True, "enabled": True, "error": None},
-        "native": {"ok": True, "enabled": True, "error": None},
+        "restful": {"ok": True, "enabled": True},
+        "native": {"ok": True, "enabled": True},
     }
 
 
@@ -126,3 +127,36 @@ def test_concurrent_health_requests_probe_upstream_once(fake):
     asyncio.run(run())
     assert len(fake.calls_to("restful", "GetSessionsByName")) == 1
     assert len(fake.calls_to("native", "SessionGroupService.ashx/GetSessionGroups")) == 1
+
+
+def test_health_hides_failure_details(client, fake):
+    fake.restful["GetSessionsByName"] = lambda args: httpx.Response(401)
+    fake.native["SessionGroupService.ashx/GetSessionGroups"] = lambda args: []
+    body = client.get("/health").json()
+    assert body["restful"] == {"ok": False, "enabled": True}
+    assert body["status"] == "degraded"
+
+
+def test_unauthenticated_requests_rejected_before_body_parsing(client, fake):
+    response = client.post(f"/v1/sessions/{SESSION_ID}/commands", content=b"{not json", headers={"content-type": "application/json"})
+    assert response.status_code == 401  # not 400: the body was never parsed
+    assert client.get("/anything-else").status_code == 401
+    assert client.get("/openapi.json").status_code == 200
+
+
+def test_body_size_limits(client):
+    big = b'{"note": "' + b"x" * 1_000_001 + b'"}'
+    response = client.post(f"/v1/sessions/{SESSION_ID}/notes", content=big, headers={**WRITE, "content-type": "application/json"})
+    assert response.status_code == 413
+
+    def chunks():
+        yield b'{"note": "x"}'
+
+    response = client.post(f"/v1/sessions/{SESSION_ID}/notes", content=chunks(), headers={**WRITE, "content-type": "application/json"})
+    assert response.status_code == 411
+
+
+def test_responses_are_not_cacheable(client, fake):
+    fake.restful["GetSessionsByFilter"] = lambda args: []
+    assert client.get("/v1/companies", headers=READ).headers["Cache-Control"] == "no-store"
+    assert client.get("/v1/companies").headers["Cache-Control"] == "no-store"
