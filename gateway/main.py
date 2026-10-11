@@ -77,8 +77,10 @@ def create_app(
     limiter = RateLimiter(
         {"read": READ_LIMIT_PER_MINUTE, "write": WRITE_LIMIT_PER_MINUTE}, clock=clock
     )
-    # Rejected keyless writes are still audited, but capped so they can't flood the log.
+    # Writes without a valid key are audited up to 60/min; the overflow is counted and
+    # reported on the next line written, so key-guessing volume stays visible.
     anonymous_audit_limiter = RateLimiter({"audit": 60}, clock=clock)
+    suppressed_keyless = {"count": 0}
     health_cache: dict[str, tuple[float, dict[str, Any]]] = {}
     health_lock = asyncio.Lock()
 
@@ -139,17 +141,17 @@ def create_app(
         host = request.client.host if request.client else None
         if path not in OPEN_PATHS and not source_ip_allowed(settings, host):
             return JSONResponse({"message": "source IP not allowed"}, status_code=403)
+        if path not in AUTH_EXEMPT_PATHS:
+            try:
+                authorize(request)
+            except GatewayError as exc:
+                return error_response(exc)
         if request.method not in READ_METHODS:
             length = request.headers.get("content-length")
             if length is None and "transfer-encoding" in request.headers:
                 return JSONResponse({"message": "Content-Length required"}, status_code=411)
             if length is not None and (not length.isdigit() or int(length) > MAX_BODY_BYTES):
                 return JSONResponse({"message": "request body too large"}, status_code=413)
-        if path not in AUTH_EXEMPT_PATHS:
-            try:
-                authorize(request)
-            except GatewayError as exc:
-                return error_response(exc)
         return None
 
     @app.middleware("http")
@@ -171,8 +173,12 @@ def create_app(
 
     def _audit(request: Request, status_code: int, backend: str | None) -> None:
         key_id = getattr(request.state, "key_id", None)
-        if key_id is None and anonymous_audit_limiter.hit("anonymous", "audit") is not None:
-            return
+        suppressed = 0
+        if key_id is None:
+            if anonymous_audit_limiter.hit("anonymous", "audit") is not None:
+                suppressed_keyless["count"] += 1
+                return
+            suppressed, suppressed_keyless["count"] = suppressed_keyless["count"], 0
         route = request.scope.get("route")
         audit_write(
             endpoint=f"{request.method} {getattr(route, 'path', request.url.path)}",
@@ -181,6 +187,7 @@ def create_app(
             backend=None if backend == "none" else backend,
             status_code=status_code,
             client_ip=request.client.host if request.client else None,
+            suppressed_keyless=suppressed,
         )
 
     # ---------- auth + rate limiting ----------

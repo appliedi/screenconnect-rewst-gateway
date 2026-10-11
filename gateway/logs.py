@@ -79,19 +79,19 @@ def audit_write(
     backend: str | None,
     status_code: int,
     client_ip: str | None,
+    suppressed_keyless: int = 0,
 ) -> None:
     """One JSON line per write. Never pass request bodies here."""
-    audit_logger.info(
-        json.dumps(
-            {
-                "time": datetime.now(UTC).isoformat(),
-                "endpoint": endpoint,
-                "sessionId": session_id,
-                "clientIp": client_ip,
-                "keyId": key_id,
-                "backend": backend,
-                "status": status_code,
-                "result": "ok" if status_code < 400 else "error",
-            }
-        )
-    )
+    entry = {
+        "time": datetime.now(UTC).isoformat(),
+        "endpoint": endpoint,
+        "sessionId": session_id,
+        "clientIp": client_ip,
+        "keyId": key_id,
+        "backend": backend,
+        "status": status_code,
+        "result": "ok" if status_code < 400 else "error",
+    }
+    if suppressed_keyless:
+        entry["suppressedKeyless"] = suppressed_keyless
+    audit_logger.info(json.dumps(entry))

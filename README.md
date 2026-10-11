@@ -100,7 +100,7 @@ Commands are asynchronous. `send_command` returns `202 {sessionId, queued: true}
 ### Read this before deploying
 
 - **The write key is the keys to the kingdom.** It can run arbitrary commands on every machine the service account can reach, and `POST /v1/users` can create ScreenConnect users. Store it like a domain-admin credential, give it only to the Rewst workflows that need it, and rotate it if it leaks.
-- **Give the ScreenConnect service account the least privilege that works.** The gateway can only do what that account is allowed to do. If you don't need `create_user`, don't give the account user-management rights. If you do, set `ALLOWED_USER_ROLES` so a leaked write key can't mint administrators.
+- **Give the ScreenConnect service account the least privilege that works.** The gateway can only do what that account is allowed to do. If you don't need `create_user`, don't give the account user-management rights. If you do, set `ALLOWED_USER_ROLES` so a leaked write key can't mint administrators. Note that ScreenConnect's `SaveUser` may update an existing user with the same name (unverified); test on a non-production instance before relying on `create_user`, and never let it target the gateway's own service account.
 - **Always serve over HTTPS.** API keys travel in a header.
 - **Set `ALLOWED_SOURCE_IPS`** to Rewst's egress ranges if you can.
 - **Behind a reverse proxy**, set `FORWARDED_ALLOW_IPS` to the proxy's address only. Never combine `FORWARDED_ALLOW_IPS=*` with `ALLOWED_SOURCE_IPS` when the gateway is reachable other than through the proxy: clients could spoof `X-Forwarded-For` and walk past the allowlist. On platforms whose proxy IPs aren't fixed (e.g. Azure App Service), use the platform's own access restrictions instead.
@@ -116,7 +116,7 @@ Commands are asynchronous. `send_command` returns `202 {sessionId, queued: true}
 - **Upstream allowlist:** the gateway can call only the 17 methods in `gateway/allowlist.py` (11 restful + 6 native), plus the native login sequence (`TryLogin`, `GET /`). Clients check the allowlist before any network I/O, and tests enforce it.
 - **Injection:** company ids and names are single-quote-escaped (`'` → `''`) before they go into ScreenConnect filter expressions. Session ids must be GUIDs.
   - The `filter` parameter on `GET /v1/sessions` and `/v1/session-groups/sessions` is passed through by design. Anyone with the read key can query any session.
-- **Audit log:** every non-GET request, including rejected ones, emits one JSON line on the `gateway.audit` logger with `time, endpoint, sessionId, clientIp, keyId, backend, status, result`. Request bodies are never logged. Lines for requests without a valid key are capped at 60/min so they can't flood the log.
+- **Audit log:** every non-GET request, including rejected ones, emits one JSON line on the `gateway.audit` logger with `time, endpoint, sessionId, clientIp, keyId, backend, status, result`. Request bodies are never logged. Lines for requests without a valid key are capped at 60/min so they can't flood the log; the overflow is counted in `suppressedKeyless` on the next line written.
 - **Redaction:** every log record from any logger, *including tracebacks*, is scrubbed of the configured secrets and of the native session cookies and anti-forgery token (registered when obtained).
   - Validation errors never echo submitted values, and the `create_user` password is a `SecretStr`.
 - **`/health` is unauthenticated, so it is kept cheap and quiet.**

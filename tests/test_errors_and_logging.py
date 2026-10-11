@@ -151,3 +151,21 @@ def test_docker_lockfile_matches_uv_lock():
     ).stdout
     committed = (root / "requirements.lock").read_text()
     assert expected.strip() in committed, "regenerate requirements.lock (see README)"
+
+
+def test_suppressed_keyless_audit_lines_are_counted(client, clock, caplog):
+    with caplog.at_level(logging.INFO):
+        for _ in range(70):
+            client.post(f"/v1/sessions/{SESSION_ID}/notes", json={"note": "x"}, headers={"X-Api-Key": "guess"})
+        clock.now += 61
+        client.post(f"/v1/sessions/{SESSION_ID}/notes", json={"note": "x"}, headers={"X-Api-Key": "guess"})
+    audit = [json.loads(r.getMessage()) for r in caplog.records if r.name == "gateway.audit"]
+    assert len(audit) == 61
+    assert audit[-1]["suppressedKeyless"] == 10  # key-guessing volume stays visible
+
+
+def test_oversized_body_with_valid_key_is_attributed(client, caplog):
+    with caplog.at_level(logging.INFO):
+        client.post(f"/v1/sessions/{SESSION_ID}/notes", content=b"x" * 1_000_001, headers={**WRITE, "content-type": "application/json"})
+    entry = json.loads([r for r in caplog.records if r.name == "gateway.audit"][-1].getMessage())
+    assert entry["status"] == 413 and entry["keyId"] == "write"
