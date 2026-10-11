@@ -60,7 +60,7 @@ def test_company_change_invalidates_company_cache(client, fake):
 
 @pytest.mark.parametrize(
     "body",
-    [{}, {"customProperties": {"8": "x"}}, {"customProperties": {"0": "x"}}, {"color": "red"}],
+    [{}, {"customProperties": {"8": "x"}}, {"customProperties": {"0": "x"}, "company": "y"}, {"color": "red"}],
 )
 def test_invalid_custom_property_bodies(client, fake, body):
     response = client.patch(f"/v1/sessions/{SESSION_ID}/custom-properties", json=body, headers=WRITE)
@@ -77,7 +77,7 @@ def test_create_session_maps_named_properties(client, fake):
         headers=WRITE,
     )
     assert response.status_code == 201
-    assert response.json() == {"sessionId": SESSION_ID, "name": "New PC"}
+    assert response.json() == {"sessionId": SESSION_ID, "name": "New PC", "raw": {"SessionID": SESSION_ID, "Name": "New PC"}}
     assert fake.calls_to("restful", "CreateSession") == [
         [2, "New PC", False, None, ["Acme", "", "", "Laptop", "", "", "", ""]]
     ]

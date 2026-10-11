@@ -107,6 +107,9 @@ def test_openapi_contract(client):
         "search_sessions", "get_session", "get_session_details", "get_connection_logs", "create_session",
         "send_command", "send_message", "add_note", "run_toolbox_item", "rename_session",
         "update_custom_properties", "create_user",
+        # parity additions
+        "save_user", "add_session_events", "raw_search_sessions", "raw_get_session",
+        "raw_get_session_details", "raw_get_live_data", "raw_get_native_session_details",
     }
     for item in spec["paths"].values():
         for op in item.values():

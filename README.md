@@ -49,8 +49,9 @@ Behind a proxy, `ALLOWED_SOURCE_IPS` should see the real client IP. Set uvicorn'
 | `COMPANY_CACHE_SECONDS` | no | `300` | `0` disables the cache |
 | `ALLOWED_SOURCE_IPS` | no | – | Comma-separated CIDRs; others get 403 (`/health` exempt) |
 | `PORT` | no | `8080` | |
-| `NATIVE_DEFAULT_GROUP` | no | `All Machines` | Group used by native calls that need one but get none from the caller (search, get-by-id, details, custom-property writes) |
-| `ALLOWED_USER_ROLES` | no | – | Comma-separated roles `POST /v1/users` may assign; others get 403. Unset = any role |
+| `NATIVE_DEFAULT_GROUP` | no | `All Machines` | Preferred unfiltered Access group for native name searches. Other types use their unfiltered group (`All Sessions`, `All Meetings`) from `GetSessionGroups`. Lookups use the group ScreenConnect reports for the session |
+| `ALLOWED_USER_ROLES` | no | – | Comma-separated roles `create_user`/`save_user` may assign; others get 403. Unset = any role |
+| `ALLOWED_EVENT_TYPES` | no | – | Comma-separated `SessionEventType` names or numbers `add_session_events` may queue (e.g. `QueuedCommand,QueuedMessage`); others get 403. Unset = any defined type |
 | `TLS_CERT_FILE`, `TLS_KEY_FILE` | no | – | Serve TLS directly |
 
 If a backend's credentials are missing, that backend is disabled at startup. A warning is logged and `/health` reports it as `enabled: false`.
@@ -78,19 +79,26 @@ All responses are JSON. Errors are always `{"message": "..."}`. Every response h
 | `GET /v1/companies` | list_companies | both (cached `COMPANY_CACHE_SECONDS`) |
 | `GET /v1/companies/{companyId}/sessions?sessionType=2` | list_company_sessions | both |
 | `GET /v1/session-groups` | list_session_groups | native only |
-| `GET /v1/session-groups/sessions?path=…&path=…&sessionType=&filter=&limit=` | list_group_sessions | native only |
-| `GET /v1/sessions?filter=…` or `?name=…` | search_sessions | both |
-| `GET /v1/sessions/{id}` | get_session | both |
-| `GET /v1/sessions/{id}/details?group=` | get_session_details | both |
-| `GET /v1/sessions/{id}/connection-logs?group=` | get_connection_logs | native only |
+| `GET /v1/session-groups/sessions?path=…&path=…&sessionType=&filter=&limit=&findSessionId=&complete=` | list_group_sessions | native only |
+| `GET /v1/sessions?filter=…` or `?name=…` (`&sessionType=`) | search_sessions | `name`: both; `filter`: restful only |
+| `GET /v1/sessions/{id}?sessionType=&groupPath=` | get_session | both |
+| `GET /v1/sessions/{id}/details?groupPath=&sessionType=` (`group=` still accepted) | get_session_details | both |
+| `GET /v1/sessions/{id}/connection-logs?groupPath=&sessionType=` | get_connection_logs | both |
+| `GET /v1/raw/restful/sessions?filter=…` or `?name=…` | raw_search_sessions | restful (verbatim) |
+| `GET /v1/raw/restful/sessions/{id}` | raw_get_session | restful (verbatim) |
+| `GET /v1/raw/restful/sessions/{id}/details` | raw_get_session_details | restful (verbatim) |
+| `GET /v1/raw/native/live-data?sessionType=&path=&filter=&findSessionId=&limit=` | raw_get_live_data | native (verbatim) |
+| `GET /v1/raw/native/sessions/{id}/details?groupPath=&sessionType=&items=` | raw_get_native_session_details | native (verbatim) |
 | `POST /v1/sessions` | create_session | restful only |
 | `POST /v1/sessions/{id}/commands` | send_command | both |
+| `POST /v1/session-events` | add_session_events | native only |
 | `POST /v1/sessions/{id}/messages` | send_message | restful only |
 | `POST /v1/sessions/{id}/notes` | add_note | restful only |
 | `POST /v1/sessions/{id}/toolbox` | run_toolbox_item | restful only |
 | `PATCH /v1/sessions/{id}/name` | rename_session | restful only |
 | `PATCH /v1/sessions/{id}/custom-properties` | update_custom_properties | both |
 | `POST /v1/users` | create_user | native only |
+| `POST /v1/users/save` | save_user | native only |
 
 ### Session fields
 
@@ -120,7 +128,7 @@ All times are ISO-8601 UTC (`...Z`). ScreenConnect's "never" values (`0001-01-01
 
 **Fleet inventory:** `GET /v1/sessions?filter=SessionType = 'Access'` returns every Access session, including those with a blank company (RESTful backend). List responses carry `X-Gateway-Truncated`: `false`/`true` when the upstream reports it (native), `unknown` when it gives no signal (RESTful). Don't treat a list as the complete fleet unless the header is `false`.
 
-Commands are asynchronous. `send_command` returns `202 {sessionId, queued: true}`. Poll `get_session_details` for an `eventType: 70` (ProcessedCommand) event whose `data` is the output; `44` is the RanCommand event.
+Commands are asynchronous. `send_command` returns `202 {sessionId, queued: true}`. Poll `get_session_details` for an `eventType: 70` (`RanCommand`) event whose `data` is the output; `44` is `QueuedCommand`. Event type numbers follow ScreenConnect's `SC.types.SessionEventType` (see `gateway/sc_types.py`).
 
 ### Backend selection
 
@@ -129,12 +137,87 @@ Commands are asynchronous. `send_command` returns `202 {sessionId, queued: true}
 - **Writes are never auto-retried.** They fall back to the other backend only when the first one *definitely did not apply* the request: it is disabled, it couldn't be reached, it rejected the credentials, or the method doesn't exist (404/405). A write that times out or returns 5xx is **not** sent to the other backend, because it may already have run (for example, a command executed twice). This is a stricter reading of "try the other once on 5xx/timeout", chosen on purpose because of the "never auto-retry writes" rule.
 - "Only" endpoints never fall back. They return 503 if their backend is disabled.
 
+## Parity with the original Rewst ScreenConnect integrations
+
+The gateway covers all 16 operations of Rewst's two original ScreenConnect integrations.
+
+**Where the argument shapes come from:**
+- **Native methods:** ScreenConnect's own web client, i.e. the `SC.service` definitions and the admin/host UI call sites.
+- **RESTful methods:** the extension's client definitions where they exist (`CreateSession` and `UpdateSessionName` aren't in the web client and come from the original connector's contract).
+- **Responses:** the shapes were checked against a live instance.
+
+**Separate columns, because they prove different things:**
+- **Implemented:** the gateway supports it.
+- **Automated tests:** it's tested through HTTP (request arguments and response serialization), mostly in `tests/test_parity.py`.
+- **Live (read-only):** it was checked against production. Write operations were deliberately **not** executed live (no commands, users or sessions were created); their argument order is verified against ScreenConnect's client code and covered by tests.
+
+| # | Original operation | Gateway operations | Inputs / targeting | Output | Implemented | Automated tests | Live (read-only) |
+|---|---|---|---|---|---|---|---|
+| 1 | AddNoteToSession | add_note | sessionID, noteBody | `{sessionId, ok}` | ✅ | ✅ | not executed (write) |
+| 2 | CreateSession | create_session | sessionType 0/1/2, name, isPublic, code, all 8 custom properties (named or indexed; conflicts → 400) | normalized + `raw` upstream response | ✅ | ✅ all 3 types, 8 properties, conflicts | not executed (write) |
+| 3 | GetSessionBySessionID | get_session, raw_get_session | sessionID | normalized session / verbatim | ✅ | ✅ incl. unknown-field preservation | ✅ |
+| 4 | GetSessionDetailsBySessionID | get_session_details, get_connection_logs, raw_get_session_details | sessionID | session, events (host, connectionId, correlationEventId), connections / verbatim (incl. screenshot) | ✅ | ✅ | ✅ Access + Support |
+| 5 | GetSessionsByFilter | search_sessions (`filter`), raw_search_sessions | sessionFilter expression | normalized list (all types unless `sessionType`) / verbatim | ✅ | ✅ | ✅ |
+| 6 | GetSessionsByName | search_sessions (`name`), raw_search_sessions | sessionName | normalized list / verbatim | ✅ | ✅ | ✅ |
+| 7 | SendCommandToSession | send_command | sessionID, command (+ `#!ps`, `#timeout=` helpers) | `{sessionId, queued}` | ✅ | ✅ | not executed (write) |
+| 8 | SendMessageToSession | send_message | sessionID, byHost (`from`), message | `{sessionId, queued}` | ✅ | ✅ | not executed (write) |
+| 9 | SendToolboxItemToSession | run_toolbox_item | sessionID, toolboxItemName | `{sessionId, queued}` | ✅ | ✅ | not executed (write) |
+| 10 | UpdateSessionCustomProperties | update_custom_properties | sessionID, all 8 values (merged with current) | resulting 8 values | ✅ | ✅ | not executed (write) |
+| 11 | UpdateSessionName | rename_session | sessionID, name | `{sessionId, name}` | ✅ | ✅ | not executed (write) |
+| 12 | AddSessionEvents | add_session_events (batch ≤100), send_command native fallback | sessionGroupPathParts, entries `{SessionID, EventType, Data, ConnectionID, CorrelationEventID}`; event types validated against `SessionEventType` | `{queued, sessionIds}` | ✅ | ✅ batch, names/numbers, unknown types, allowlist, read key | validation only (no events queued) |
+| 13 | GetLiveData | list_group_sessions, list_company_sessions, search_sessions (`name`), list_companies, raw_get_live_data | sessionType 0/1/2, nested sessionGroupPathParts, filter (free text), findSessionID, sessionLimit | normalized / verbatim (Version, ProductVersion, full ResponseInfoMap) + truncation headers | ✅ | ✅ all types, nested paths, find, limit, `complete` | ✅ all 3 types, 1,715/1,715 complete |
+| 14 | GetSessionDetails | get_session / get_session_details / get_connection_logs (native), raw_get_native_session_details | sessionGroupPathPartsOrName (default: the session's reported group), sessionID, items flags | normalized / verbatim | ✅ | ✅ Support, Meeting, items, paths | ✅ Access + Support |
+| 15 | UpdateSessionCustomPropertyValue | update_custom_properties (native) | caller `groupPath` passed through unchanged (default: the session's reported group), sessionID, index 0-7, value | resulting 8 values | ✅ | ✅ caller path, Support session | not executed (write) |
+| 16 | SaveUser | create_user, save_user | userSourceName, originalUserName (`oldUserName`), newUserName, password (null = keep), verifyPassword, passwordQuestion (`otpTokenString`, the MFA setting), displayName, comment, email, roleNames, forcePasswordChange | `{userName, oldUserName, created}` | ✅ create, update, rename | ✅ incl. required-fields guard, secrecy, role allowlist | validation only (no user saved) |
+
+### Raw compatibility endpoints
+
+`/v1/raw/...` returns ScreenConnect's payload **verbatim** in `response`, alongside `backend`, `upstreamMethod` and `receivedAt`. Nothing is removed, including fields the gateway doesn't know about.
+
+- **Read-only:** they're GET only and use the read key.
+- **Allowlisted:** they're limited to the allowlisted methods, with typed parameters, so they aren't a general proxy.
+- **Native times are relative:** `GetLiveData` times are seconds before `receivedAt`, and `GetSessionDetails` times are relative to its `BaseTime` (epoch ms; event times in ms, guest-info time in seconds).
+- **Use these when you need every field.** The normalized endpoints stay compact.
+- **Pass a `path` to `raw_get_live_data`.** Without one, ScreenConnect picks its own default view for the session type.
+- **RESTful details include `GuestScreenshotContent`,** an image of the user's screen. Treat the read key accordingly.
+
+### Native targeting
+
+- **Get-by-ID, details, connection logs and native writes** locate the session the way ScreenConnect's UI does: `findSessionID` with the session's type.
+- **Without a `sessionType` hint,** the gateway tries Access, Support and Meeting (at most three reads). It then uses the group path ScreenConnect reports for the session.
+- **`groupPath` (repeatable) and `sessionType` override this.** For custom-property writes, a caller's `groupPath` is passed to `UpdateSessionCustomPropertyValue` unchanged.
+- **Native name searches without `sessionType`** search the unfiltered group of every type, matching RESTful `GetSessionsByName`, which covers all types.
+
+### Completeness
+
+- **`GetLiveData` has no paging,** only `sessionLimit`.
+  - List responses carry `X-Gateway-Truncated` (`true`/`false` from ScreenConnect's `UntruncatedSessionCount`, `unknown` when there's no signal) and, for group listings, `X-Gateway-Total-Count`.
+  - `list_group_sessions` defaults to `limit=1000`. Pass `complete=true` to re-request with the untruncated count (up to 100,000) and get `X-Gateway-Truncated: false`.
+  - Company sessions and native name searches do this automatically.
+- **The RESTful API has no limit or paging parameters and no truncation signal,** so its lists report `unknown`.
+  - In live testing it returned the full fleet (1,715 Access sessions, equal to native's untruncated count).
+  - For a verified-complete Access inventory, use `GET /v1/session-groups/sessions?path=All Machines&complete=true`.
+
+### Backend differences (by design)
+
+- **`filter`:** on RESTful it's an expression language (`GetSessionsByFilter`). On native it's free-text search, as in the web UI search box. Expressions are therefore restful-only: `?backend=native` returns 400 and they never silently fall back.
+- **Omitted `sessionType`:** both backends cover all session types.
+- **Native lists:** they don't include serial, MAC or guest-info update time (those need a per-session details read). Native never provides `lastGuestConnectedEventTime`, `isDeleted` or `isEnded` (see Session fields).
+- **Native lookups:** they cost one to three extra reads (session location) per single-session call. Lists never make per-session calls.
+
+### Remaining limitations
+
+- Write operations are verified by contract and tests, not by live execution.
+- `CreateSession` and `UpdateSessionName` RESTful argument shapes come from the original connector; they aren't in ScreenConnect's web client.
+- The RESTful backend can't prove completeness (no truncation signal).
+- `save_user` can't read a user's current values (no read method is in the original integrations), so updates must restate every field.
+
 ## Security
 
 ### Read this before deploying
 
 - **The write key is the keys to the kingdom.** It can run arbitrary commands on every machine the service account can reach, and `POST /v1/users` can create ScreenConnect users. Store it like a domain-admin credential, give it only to the Rewst workflows that need it, and rotate it if it leaks.
-- **Give the ScreenConnect service account the least privilege that works.** The gateway can only do what that account is allowed to do. If you don't need `create_user`, don't give the account user-management rights. If you do, set `ALLOWED_USER_ROLES` so a leaked write key can't mint administrators. Note that ScreenConnect's `SaveUser` may update an existing user with the same name (unverified); test on a non-production instance before relying on `create_user`, and never let it target the gateway's own service account.
+- **Give the ScreenConnect service account the least privilege that works.** The gateway can only do what that account is allowed to do. If you don't need `create_user`, don't give the account user-management rights. If you do, set `ALLOWED_USER_ROLES` so a leaked write key can't mint administrators, and never let `save_user` target the gateway's own service account. `add_session_events` can queue any defined event type (including uninstall/reinstall); restrict it with `ALLOWED_EVENT_TYPES` if Rewst only needs a few.
 - **Always serve over HTTPS.** API keys travel in a header.
 - **Set `ALLOWED_SOURCE_IPS`** to Rewst's egress ranges if you can.
 - **Behind a reverse proxy**, set `FORWARDED_ALLOW_IPS` to the proxy's address only. Never combine `FORWARDED_ALLOW_IPS=*` with `ALLOWED_SOURCE_IPS` when the gateway is reachable other than through the proxy: clients could spoof `X-Forwarded-For` and walk past the allowlist. On platforms whose proxy IPs aren't fixed (e.g. Azure App Service), use the platform's own access restrictions instead.

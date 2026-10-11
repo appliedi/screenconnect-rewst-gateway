@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
+from .sc_types import event_type_value
+
 BackendPreference = Literal["restful-first", "native-first"]
 IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
@@ -33,6 +35,7 @@ class Settings:
     health_cache_seconds: int = 15
     request_deadline_seconds: float = 90.0
     allowed_user_roles: tuple[str, ...] = ()
+    allowed_event_types: frozenset[int] = frozenset()
 
     @property
     def restful_enabled(self) -> bool:
@@ -107,4 +110,12 @@ class Settings:
             port=int(get("PORT", "8080")),
             native_default_group=get("NATIVE_DEFAULT_GROUP", "All Machines"),
             allowed_user_roles=tuple(role.strip() for role in get("ALLOWED_USER_ROLES").split(",") if role.strip()),
+            allowed_event_types=_event_types(get("ALLOWED_EVENT_TYPES")),
         )
+
+
+def _event_types(value: str) -> frozenset[int]:
+    try:
+        return frozenset(event_type_value(item.strip()) for item in value.split(",") if item.strip())
+    except ValueError as exc:
+        raise ConfigError(f"ALLOWED_EVENT_TYPES: {exc}") from exc

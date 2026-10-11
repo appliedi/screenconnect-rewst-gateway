@@ -4,6 +4,54 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-10-11
+
+Parity with both original Rewst ScreenConnect integrations (16 operations). Argument shapes
+for the native methods were verified against ScreenConnect's own web client. See the parity
+matrix in the README.
+
+### Added
+- **Raw compatibility endpoints.** These are read-only and return the upstream payload verbatim,
+  with `backend`/`upstreamMethod`/`receivedAt` metadata:
+  - `raw_search_sessions`, `raw_get_session` and `raw_get_session_details` (RESTful)
+  - `raw_get_live_data` and `raw_get_native_session_details` (native)
+- **`save_user`.** It exposes the full `SecurityService.SaveUser` contract: create, update and
+  rename via `oldUserName`, `userSource`, `verifyPassword`, `passwordQuestion`/`otpTokenString`
+  (the MFA setting), and `comment`.
+  - A null password keeps the existing one.
+  - Updates must restate every replaced field, so they can't silently wipe data.
+- **`add_session_events`.** It exposes native `AddSessionEvents` batches (up to 100) for a
+  session group path.
+  - Event types are validated against ScreenConnect's `SessionEventType` enum.
+  - Optional `ALLOWED_EVENT_TYPES` restricts which types can be queued.
+- **`create_session` accepts all 8 custom properties** (`customProperties` "0"-"7"). A named field and its
+  index must agree, otherwise the request is rejected (400). The response now includes the
+  upstream response as `raw`.
+- **Native targeting options:**
+  - `groupPath` and `sessionType` on `get_session`, `get_session_details`, `get_connection_logs`,
+    `update_custom_properties` and `send_command`
+  - `findSessionId` and `complete` on `list_group_sessions`
+- **Completeness headers:** `X-Gateway-Total-Count` on group listings. Native company and name
+  searches re-request automatically when ScreenConnect reports truncation.
+- **More detail fields:**
+  - Session details now include connections from both backends.
+  - Events include `host`, `connectionId` and `correlationEventId`.
+  - Connections include `clientVersion` and `attributes`.
+- **Connection logs are available from the RESTful backend too.**
+
+### Changed
+- **Native lookups no longer assume Access sessions or the "All Machines" group.** They locate the
+  session with `findSessionID` (Access, then Support, then Meeting) and use the group path ScreenConnect
+  reports for it.
+- **Native name searches without `sessionType` cover all session types**, matching the RESTful API.
+- **Native `GetSessionDetails` requests only the data needed** (the `items` flags). The guest
+  screenshot is no longer downloaded for normalized reads.
+- **`list_group_sessions` `limit` maximum** raised from 10,000 to 100,000.
+- **`create_user` sends `null`** rather than an empty string for "no MFA", matching the ScreenConnect UI.
+
+### Fixed
+- **Documentation of event types:** 44 is `QueuedCommand` and 70 is `RanCommand` (the command output).
+
 ## [1.3.0] - 2026-10-11
 
 ### Added

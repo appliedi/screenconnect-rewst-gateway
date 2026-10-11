@@ -45,6 +45,16 @@ def raw_session(
     }
 
 
+# Same structure as a real instance's GetSessionGroups (names are ScreenConnect defaults).
+SESSION_GROUPS = [
+    {"Name": "All Sessions", "SessionType": 0, "SessionFilter": "", "SubgroupExpressions": ""},
+    {"Name": "My Sessions", "SessionType": 0, "SessionFilter": "Host = $USERNAME", "SubgroupExpressions": ""},
+    {"Name": "All Meetings", "SessionType": 1, "SessionFilter": "", "SubgroupExpressions": ""},
+    {"Name": "All Machines by Company", "SessionType": 2, "SessionFilter": "", "SubgroupExpressions": "CustomProperty1"},
+    {"Name": "All Machines", "SessionType": 2, "SessionFilter": "", "SubgroupExpressions": ""},
+]
+
+
 def live_data(sessions: list[dict] | None = None, summaries: list[list[dict]] | None = None) -> dict:
     return {
         "ResponseInfoMap": {
@@ -58,7 +68,7 @@ class FakeScreenConnect:
 
     def __init__(self) -> None:
         self.restful: dict[str, Handler] = {}
-        self.native: dict[str, Handler] = {}
+        self.native: dict[str, Handler] = {"SessionGroupService.ashx/GetSessionGroups": lambda args: SESSION_GROUPS}
         self.calls: list[tuple[str, str, Any, httpx.Request]] = []
         self.logins: list[list[Any]] = []
         self.valid_cookie: str | None = None

@@ -5,6 +5,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
@@ -18,43 +19,67 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import models
 from .config import Settings
-from .errors import AmbiguousCompanyError, AuthenticationError, ForbiddenError, GatewayError, RateLimitedError
+from .errors import (
+    AmbiguousCompanyError,
+    AuthenticationError,
+    BadRequestError,
+    ForbiddenError,
+    GatewayError,
+    RateLimitedError,
+)
 from .logs import audit_write, configure_logging, install_redaction, secret_registry
 from .security import READ_METHODS, RateLimiter, identify_key, source_ip_allowed
+from .sc_types import DETAILS_CONNECTIONS, DETAILS_EVENTS, DETAILS_SESSION_INFO
 from .service import Gateway, Served
 from .upstream.native import NativeClient
 from .upstream.restful import RestfulClient
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 logger = logging.getLogger("gateway")
 
 BACKEND_HEADER = "X-Gateway-Backend"
 RESOLVED_COMPANY_HEADER = "X-Gateway-Resolved-Company"
 TRUNCATED_HEADER = "X-Gateway-Truncated"
+TOTAL_HEADER = "X-Gateway-Total-Count"
 TRUNCATED_HEADER_DOC = {
-    "description": "true/false when the upstream reports truncation (native); unknown when it gives no "
-    "signal (restful). Never assume a complete fleet unless this is false.",
+    "description": "true/false when the upstream reports truncation (native GetLiveData); unknown when it gives "
+    "no signal (restful). Never assume a complete fleet unless this is false.",
     "schema": {"type": "string", "enum": ["true", "false", "unknown"]},
 }
+TOTAL_HEADER_DOC = {
+    "description": "Native UntruncatedSessionCount for the queried group, when ScreenConnect reports it",
+    "schema": {"type": "integer"},
+}
 LIST_RESPONSES: dict[int | str, dict[str, Any]] = {200: {"headers": {TRUNCATED_HEADER: TRUNCATED_HEADER_DOC}}}
+GROUP_LIST_RESPONSES: dict[int | str, dict[str, Any]] = {
+    200: {"headers": {TRUNCATED_HEADER: TRUNCATED_HEADER_DOC, TOTAL_HEADER: TOTAL_HEADER_DOC}}
+}
+RESOLVED_HEADER_DOC = {
+    "description": "URL-encoded raw company id, present when the given id matched only "
+    "case/whitespace-insensitively (e.g. a lowercased Rewst mapping id)",
+    "schema": {"type": "string"},
+}
+AMBIGUOUS_RESPONSE = {"model": models.AmbiguousCompany, "description": "Company id matches more than one company"}
 COMPANY_RESOLUTION_RESPONSES: dict[int | str, dict[str, Any]] = {
+    200: {"headers": {TRUNCATED_HEADER: TRUNCATED_HEADER_DOC, RESOLVED_COMPANY_HEADER: RESOLVED_HEADER_DOC}},
+    409: AMBIGUOUS_RESPONSE,
+}
+GROUP_RESOLUTION_RESPONSES: dict[int | str, dict[str, Any]] = {
     200: {
         "headers": {
             TRUNCATED_HEADER: TRUNCATED_HEADER_DOC,
-            RESOLVED_COMPANY_HEADER: {
-                "description": "URL-encoded raw company id, present when the given id matched only "
-                "case/whitespace-insensitively (e.g. a lowercased Rewst mapping id)",
-                "schema": {"type": "string"},
-            }
+            TOTAL_HEADER: TOTAL_HEADER_DOC,
+            RESOLVED_COMPANY_HEADER: RESOLVED_HEADER_DOC,
         }
     },
-    409: {"model": models.AmbiguousCompany, "description": "Company id matches more than one company"},
+    409: AMBIGUOUS_RESPONSE,
 }
 OPEN_PATHS = {"/health"}
 AUTH_EXEMPT_PATHS = {"/health", "/openapi.json"}
 MAX_BODY_BYTES = 1_000_000
 READ_LIMIT_PER_MINUTE = 120
 WRITE_LIMIT_PER_MINUTE = 10
+MAX_GROUP_LIMIT = 100_000
 
 BackendParam = Annotated[
     Literal["restful", "native"] | None,
@@ -62,7 +87,20 @@ BackendParam = Annotated[
 ]
 SessionIdParam = Annotated[str, Path(alias="sessionId", pattern=r"^[0-9a-fA-F-]{32,36}$")]
 GroupParam = Annotated[
-    str | None, Query(description="Session group used by the native backend (default 'All Machines')")
+    str | None,
+    Query(description="Native: single session group name (same as groupPath=<name>). Kept for compatibility."),
+]
+GroupPathParam = Annotated[
+    list[str] | None,
+    Query(
+        alias="groupPath",
+        description="Native: session group path (sessionGroupPathParts); repeat for nested groups. "
+        "Default: the group ScreenConnect reports for the session.",
+    ),
+]
+NativeSessionTypeParam = Annotated[
+    int | None,
+    Query(alias="sessionType", ge=0, le=2, description="Native lookup hint: 0 Support, 1 Meeting, 2 Access"),
 ]
 
 
@@ -70,9 +108,17 @@ def served(response: Response, result: Served[Any], *, listing: bool = False) ->
     response.headers[BACKEND_HEADER] = result.backend
     if listing:
         response.headers[TRUNCATED_HEADER] = {True: "true", False: "false", None: "unknown"}[result.truncated]
+        if result.total is not None:
+            response.headers[TOTAL_HEADER] = str(result.total)
     if result.resolved_company is not None:
         response.headers[RESOLVED_COMPANY_HEADER] = quote(result.resolved_company, safe="")
     return result.value
+
+
+def group_path_of(group: str | None, group_path: list[str] | None) -> list[str] | None:
+    if group is not None and group_path is not None:
+        raise BadRequestError("give either group or groupPath, not both")
+    return group_path if group_path is not None else ([group] if group is not None else None)
 
 
 def create_app(
@@ -310,19 +356,30 @@ def create_app(
         operation_id="list_group_sessions",
         response_model=models.GroupSessions,
         tags=["session-groups"],
-        responses=COMPANY_RESOLUTION_RESPONSES,
+        responses=GROUP_RESOLUTION_RESPONSES,
     )
     async def list_group_sessions(
         response: Response,
         path: Annotated[list[str], Query(min_length=1, description="Group path segments, outermost first. Repeat the parameter.")],
-        session_type: Annotated[int, Query(alias="sessionType", ge=0, le=2)] = 2,
+        session_type: Annotated[int, Query(alias="sessionType", ge=0, le=2, description="0 Support, 1 Meeting, 2 Access")] = 2,
         filter: Annotated[
             str, Query(description="Free-text search within the group, like the ScreenConnect web UI search box")
         ] = "",
-        limit: Annotated[int, Query(ge=1, le=10_000)] = 1000,
+        limit: Annotated[int, Query(ge=1, le=MAX_GROUP_LIMIT, description="sessionLimit (GetLiveData has no paging)")] = 1000,
+        find_session_id: Annotated[
+            str, Query(alias="findSessionId", pattern=r"^([0-9a-fA-F-]{32,36})?$", description="findSessionID")
+        ] = "",
+        complete: Annotated[
+            bool,
+            Query(description="If the result is truncated, re-request with ScreenConnect's untruncated count "
+                  f"(up to {MAX_GROUP_LIMIT:,}) so X-Gateway-Truncated is false"),
+        ] = False,
         backend: BackendParam = None,
     ):
-        return served(response, await gateway.list_group_sessions(path, session_type, filter, limit, backend), listing=True)
+        result = await gateway.list_group_sessions(
+            path, session_type, filter, limit, find_session_id=find_session_id, complete=complete, forced=backend
+        )
+        return served(response, result, listing=True)
 
     @v1.get(
         "/sessions",
@@ -338,7 +395,10 @@ def create_app(
             Query(description="ScreenConnect session filter expression, e.g. GuestMachineName LIKE 'SRV*' (restful backend only)"),
         ] = None,
         name: Annotated[str | None, Query(description="Exact session name")] = None,
-        session_type: Annotated[int | None, Query(alias="sessionType", ge=0, le=2)] = None,
+        session_type: Annotated[
+            int | None,
+            Query(alias="sessionType", ge=0, le=2, description="Omit for all session types (both backends)"),
+        ] = None,
         backend: BackendParam = None,
     ):
         """Provide exactly one of `filter` or `name`. For the whole Access fleet, including sessions
@@ -352,8 +412,17 @@ def create_app(
         )
 
     @v1.get("/sessions/{sessionId}", operation_id="get_session", response_model=models.Session, tags=["sessions"])
-    async def get_session(response: Response, session_id: SessionIdParam, backend: BackendParam = None):
-        return served(response, await gateway.get_session(session_id, backend))
+    async def get_session(
+        response: Response,
+        session_id: SessionIdParam,
+        session_type: NativeSessionTypeParam = None,
+        group_path: GroupPathParam = None,
+        backend: BackendParam = None,
+    ):
+        result = await gateway.get_session(
+            session_id, session_type=session_type, group_path=group_path, forced=backend
+        )
+        return served(response, result)
 
     @v1.get(
         "/sessions/{sessionId}/details",
@@ -362,10 +431,18 @@ def create_app(
         tags=["sessions"],
     )
     async def get_session_details(
-        response: Response, session_id: SessionIdParam, group: GroupParam = None, backend: BackendParam = None
+        response: Response,
+        session_id: SessionIdParam,
+        group: GroupParam = None,
+        group_path: GroupPathParam = None,
+        session_type: NativeSessionTypeParam = None,
+        backend: BackendParam = None,
     ):
-        """Session plus events. Command output arrives as eventType 70."""
-        return served(response, await gateway.get_session_details(session_id, group, backend))
+        """Session, events and connections. Command output arrives as eventType 70 (RanCommand)."""
+        result = await gateway.get_session_details(
+            session_id, group_path=group_path_of(group, group_path), session_type=session_type, forced=backend
+        )
+        return served(response, result)
 
     @v1.get(
         "/sessions/{sessionId}/connection-logs",
@@ -374,9 +451,85 @@ def create_app(
         tags=["sessions"],
     )
     async def get_connection_logs(
-        response: Response, session_id: SessionIdParam, group: GroupParam = None, backend: BackendParam = None
+        response: Response,
+        session_id: SessionIdParam,
+        group: GroupParam = None,
+        group_path: GroupPathParam = None,
+        session_type: NativeSessionTypeParam = None,
+        backend: BackendParam = None,
     ):
-        return served(response, await gateway.get_connection_logs(session_id, group, backend))
+        result = await gateway.get_connection_logs(
+            session_id, group_path=group_path_of(group, group_path), session_type=session_type, forced=backend
+        )
+        return served(response, result)
+
+    # ---------- raw compatibility reads: verbatim upstream payloads ----------
+
+    @v1.get("/raw/restful/sessions", operation_id="raw_search_sessions", response_model=models.RawResponse, tags=["raw"])
+    async def raw_search_sessions(
+        response: Response,
+        filter: Annotated[str | None, Query(description="GetSessionsByFilter sessionFilter")] = None,
+        name: Annotated[str | None, Query(description="GetSessionsByName sessionName")] = None,
+    ):
+        """RESTful GetSessionsByFilter or GetSessionsByName (exactly one parameter)."""
+        return served(response, await gateway.raw_restful_search(filter_expression=filter, name=name))
+
+    @v1.get("/raw/restful/sessions/{sessionId}", operation_id="raw_get_session", response_model=models.RawResponse, tags=["raw"])
+    async def raw_get_session(response: Response, session_id: SessionIdParam):
+        """RESTful GetSessionBySessionID."""
+        return served(response, await gateway.raw_restful_session(session_id))
+
+    @v1.get(
+        "/raw/restful/sessions/{sessionId}/details",
+        operation_id="raw_get_session_details",
+        response_model=models.RawResponse,
+        tags=["raw"],
+    )
+    async def raw_get_session_details(response: Response, session_id: SessionIdParam):
+        """RESTful GetSessionDetailsBySessionID (Session, Events, Connections, GuestScreenshotContent)."""
+        return served(response, await gateway.raw_restful_details(session_id))
+
+    @v1.get("/raw/native/live-data", operation_id="raw_get_live_data", response_model=models.RawResponse, tags=["raw"])
+    async def raw_get_live_data(
+        response: Response,
+        session_type: Annotated[int, Query(alias="sessionType", ge=0, le=2)] = 2,
+        path: Annotated[list[str] | None, Query(description="sessionGroupPathParts; omit for ScreenConnect's default")] = None,
+        filter: Annotated[str, Query(description="Free-text search (web UI search box)")] = "",
+        find_session_id: Annotated[
+            str, Query(alias="findSessionId", pattern=r"^([0-9a-fA-F-]{32,36})?$")
+        ] = "",
+        limit: Annotated[int, Query(ge=1, le=MAX_GROUP_LIMIT, description="sessionLimit")] = 1000,
+    ):
+        """Native GetLiveData: Version, ProductVersion and the full ResponseInfoMap (HostSessionInfo with
+        Sessions, PathSessionGroupSummaries, AlternateSessionGroupSummaries, SessionGroupPath, Filter,
+        UntruncatedSessionCount; ActionCenterInfo). Native times are seconds before `receivedAt`."""
+        result = await gateway.raw_live_data(
+            session_type=session_type, path=path or [], filter_text=filter, find_session_id=find_session_id, limit=limit
+        )
+        return served(response, result)
+
+    @v1.get(
+        "/raw/native/sessions/{sessionId}/details",
+        operation_id="raw_get_native_session_details",
+        response_model=models.RawResponse,
+        tags=["raw"],
+    )
+    async def raw_get_native_session_details(
+        response: Response,
+        session_id: SessionIdParam,
+        group_path: GroupPathParam = None,
+        session_type: NativeSessionTypeParam = None,
+        items: Annotated[
+            int,
+            Query(description="SessionDetailsItems flags: 1 SessionInfo, 4 GuestScreenshotContent, 8 Events, "
+                  "16 Connections, -1 All. Default 25 (everything except the screenshot)."),
+        ] = DETAILS_SESSION_INFO | DETAILS_EVENTS | DETAILS_CONNECTIONS,
+    ):
+        """Native GetSessionDetails. Times are relative to the payload's BaseTime (epoch ms)."""
+        result = await gateway.raw_native_details(
+            session_id, group_path=group_path, session_type=session_type, items=items
+        )
+        return served(response, result)
 
     # ---------- writes ----------
 
@@ -388,12 +541,13 @@ def create_app(
         tags=["sessions"],
     )
     async def create_session(response: Response, body: models.CreateSessionRequest, backend: BackendParam = None):
+        """RESTful CreateSession. All eight custom properties may be set at creation."""
         result = await gateway.create_session(
             session_type=body.session_type,
             name=body.name,
             is_public=body.is_public,
             code=body.code,
-            changes=body.named_changes(),
+            changes=body.changes(),
             forced=backend,
         )
         return served(response, result)
@@ -408,15 +562,30 @@ def create_app(
     async def send_command(
         response: Response, session_id: SessionIdParam, body: models.CommandRequest, backend: BackendParam = None
     ):
-        """Queue a command. Poll /details for eventType 70 to read the output."""
+        """Queue a command. Poll /details for eventType 70 (RanCommand) to read the output."""
         result = await gateway.send_command(
             session_id,
             command=body.command,
             shell=body.shell,
             timeout_ms=body.timeout_ms,
-            group=body.group,
+            group_path=group_path_of(body.group, body.group_path),
+            session_type=body.session_type,
             forced=backend,
         )
+        return served(response, result)
+
+    @v1.post(
+        "/session-events",
+        operation_id="add_session_events",
+        response_model=models.QueuedEvents,
+        status_code=202,
+        tags=["sessions"],
+    )
+    async def add_session_events(response: Response, body: models.SessionEventsRequest, backend: BackendParam = None):
+        """Native AddSessionEvents: one batch of up to 100 events for sessions in one group path.
+        Event types are validated against ScreenConnect's SessionEventType enum and ALLOWED_EVENT_TYPES."""
+        events = [event.model_dump(by_alias=True) for event in body.events]
+        result = await gateway.add_session_events(group_path=body.group_path, events=events, forced=backend)
         return served(response, result)
 
     @v1.post(
@@ -478,7 +647,10 @@ def create_app(
         backend: BackendParam = None,
     ):
         """Merge the supplied fields into the current 8 values; returns the resulting 8 values."""
-        return served(response, await gateway.update_custom_properties(session_id, body.changes(), backend))
+        result = await gateway.update_custom_properties(
+            session_id, body.changes(), group_path=body.group_path, session_type=body.session_type, forced=backend
+        )
+        return served(response, result)
 
     @v1.post(
         "/users",
@@ -488,10 +660,40 @@ def create_app(
         tags=["users"],
     )
     async def create_user(response: Response, body: models.CreateUserRequest, backend: BackendParam = None):
-        result = await gateway.create_user(
-            user_name=body.user_name,
+        result = await gateway.save_user(
+            user_source=body.user_source,
+            old_user_name=None,
+            new_user_name=body.user_name,
             password=body.password.get_secret_value(),
+            verify_password=None,
+            password_question=body.password_question,
             display_name=body.display_name,
+            comment=body.comment,
+            email=body.email,
+            roles=body.roles,
+            force_password_change=body.force_password_change,
+            forced=backend,
+        )
+        return served(response, replace(result, value={"userName": result.value["userName"], "created": True}))
+
+    @v1.post(
+        "/users/save",
+        operation_id="save_user",
+        response_model=models.SavedUser,
+        tags=["users"],
+    )
+    async def save_user(response: Response, body: models.SaveUserRequest, backend: BackendParam = None):
+        """Native SecurityService.SaveUser: create (oldUserName null), update, or rename (newUserName differs).
+        Updates replace every field, so they must be stated explicitly; a null password keeps the current one."""
+        result = await gateway.save_user(
+            user_source=body.user_source,
+            old_user_name=body.old_user_name,
+            new_user_name=body.new_user_name,
+            password=body.password.get_secret_value() if body.password is not None else None,
+            verify_password=body.verify_password.get_secret_value() if body.verify_password is not None else None,
+            password_question=body.password_question,
+            display_name=body.display_name,
+            comment=body.comment,
             email=body.email,
             roles=body.roles,
             force_password_change=body.force_password_change,

@@ -176,13 +176,19 @@ def normalize_session(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _str_or_none(value: Any) -> str | None:
+    return None if value is None else str(value)
+
+
 def normalize_event(raw: dict[str, Any]) -> dict[str, Any]:
-    event_id = raw.get("EventID")
     return {
-        "eventId": None if event_id is None else str(event_id),
+        "eventId": _str_or_none(raw.get("EventID")),
         "eventType": raw.get("EventType"),
         "time": raw.get("Time") if isinstance(raw.get("Time"), str) else None,
+        "host": raw.get("Host"),
         "data": raw.get("Data"),
+        "connectionId": _str_or_none(raw.get("ConnectionID")),
+        "correlationEventId": _str_or_none(raw.get("CorrelationEventID")),
     }
 
 
@@ -201,13 +207,15 @@ def normalize_events(*event_lists: Any) -> list[dict[str, Any]]:
 
 
 def normalize_connection(raw: dict[str, Any]) -> dict[str, Any]:
-    connection_id = raw.get("ConnectionID")
+    attributes = raw.get("Attributes")
     return {
-        "connectionId": None if connection_id is None else str(connection_id),
+        "connectionId": _str_or_none(raw.get("ConnectionID")),
         "processType": raw.get("ProcessType"),
         "participantName": raw.get("ParticipantName"),
         "clientType": raw.get("ClientType"),
+        "clientVersion": raw.get("ClientVersion"),
         "networkAddress": raw.get("NetworkAddress"),
+        "attributes": attributes if isinstance(attributes, int) and not isinstance(attributes, bool) else None,
         "events": normalize_events(raw.get("Events")),
     }
 

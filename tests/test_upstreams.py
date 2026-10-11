@@ -118,6 +118,7 @@ def test_403_right_after_login_does_not_relogin(client, fake):
 
 def test_restful_redirect_on_write_is_not_success(client, fake):
     fake.restful["SendCommandToSession"] = lambda args: httpx.Response(302, headers={"location": "/Login"})
+    fake.native["PageService.ashx/GetLiveData"] = lambda args: live_data([raw_session()])
     fake.native["PageService.ashx/AddSessionEvents"] = lambda args: None
     response = client.post(f"/v1/sessions/{SESSION_ID}/commands", json={"command": "whoami"}, headers=WRITE)
     assert response.status_code == 202
@@ -180,10 +181,18 @@ def test_session_details_and_events(client, fake):
     body = response.json()
     assert body["session"]["sessionId"] == SESSION_ID
     assert [e["eventType"] for e in body["events"]] == [44, 70]
-    assert body["events"][1] == {"eventId": "e2", "eventType": 70, "time": "2026-10-11T10:00:02Z", "data": "acme\\svc"}
+    assert body["events"][1] == {
+        "eventId": "e2",
+        "eventType": 70,
+        "time": "2026-10-11T10:00:02Z",
+        "host": None,
+        "data": "acme\\svc",
+        "connectionId": None,
+        "correlationEventId": None,
+    }
 
 
-def test_connection_logs_native_only(client, fake):
+def test_connection_logs_native_with_group(client, fake):
     fake.native["PageService.ashx/GetSessionDetails"] = lambda args: {
         "Session": raw_session(),
         "Connections": [
@@ -191,10 +200,13 @@ def test_connection_logs_native_only(client, fake):
              "NetworkAddress": "10.0.0.5", "Events": [{"EventID": "x", "EventType": 10, "Time": "t", "Data": None}]}
         ],
     }
-    response = client.get(f"/v1/sessions/{SESSION_ID}/connection-logs", params={"group": "All Machines"}, headers=READ)
+    response = client.get(
+        f"/v1/sessions/{SESSION_ID}/connection-logs", params={"group": "All Machines", "backend": "native"}, headers=READ
+    )
     assert response.status_code == 200
     assert response.headers["X-Gateway-Backend"] == "native"
-    assert fake.calls_to("native", "PageService.ashx/GetSessionDetails") == [["All Machines", SESSION_ID]]
+    # group -> sessionGroupPathParts; items 16 = Connections only
+    assert fake.calls_to("native", "PageService.ashx/GetSessionDetails") == [[["All Machines"], SESSION_ID, 16]]
     assert response.json()["connections"][0]["networkAddress"] == "10.0.0.5"
 
 
@@ -224,10 +236,14 @@ def test_search_requires_exactly_one_criterion(client):
 
 def test_native_name_search_uses_text_search_then_exact_match(make_client, fake):
     client = make_client(backend_preference="native-first")
-    fake.native["PageService.ashx/GetLiveData"] = lambda args: live_data(
-        [raw_session("a", name="Bob's PC"), raw_session("b", name="Bob's PC 2")]
-    )
-    response = client.get("/v1/sessions", params={"name": "Bob's PC"}, headers=READ)
+    def by_type(args):
+        # Only the Access query finds these sessions, as on a real instance.
+        if args[0]["HostSessionInfo"]["sessionType"] != 2:
+            return live_data([])
+        return live_data([raw_session("a", name="Bob's PC"), raw_session("b", name="Bob's PC 2")])
+
+    fake.native["PageService.ashx/GetLiveData"] = by_type
+    response = client.get("/v1/sessions", params={"name": "Bob's PC", "sessionType": 2}, headers=READ)
     assert [s["sessionId"] for s in response.json()] == ["a"]
     info = fake.calls_to("native", "PageService.ashx/GetLiveData")[0][0]["HostSessionInfo"]
     assert info["filter"] == "Bob's PC"
@@ -254,7 +270,7 @@ def test_create_user_native(client, fake):
     assert response.status_code == 201
     assert response.headers["X-Gateway-Backend"] == "native"
     assert fake.calls_to("native", "SecurityService.ashx/SaveUser") == [
-        ["InternalMembershipProvider", None, "tech1", "Sup3r$ecret!", "Sup3r$ecret!", "", "Tech One", "",
+        ["InternalMembershipProvider", None, "tech1", "Sup3r$ecret!", "Sup3r$ecret!", None, "Tech One", "",
          "t1@example.com", ["Technician"], True]
     ]
 

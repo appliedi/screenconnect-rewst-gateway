@@ -206,7 +206,17 @@ def test_native_details_session_keeps_identity(make_client, fake):
     assert body["session"]["sessionId"] == SESSION_ID
     assert body["session"]["company"] == "Acme"
     assert body["session"]["guestMachineSerialNumber"] == "5CD1234XYZ"
-    assert body["events"] == [{"eventId": "e1", "eventType": 44, "time": "2026-10-11T11:58:30Z", "data": "whoami"}]
+    assert body["events"] == [
+        {
+            "eventId": "e1",
+            "eventType": 44,
+            "time": "2026-10-11T11:58:30Z",
+            "host": None,
+            "data": "whoami",
+            "connectionId": None,
+            "correlationEventId": None,
+        }
+    ]
 
 
 def test_native_group_listing_reports_truncation(client, fake):

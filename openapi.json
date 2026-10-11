@@ -3,7 +3,7 @@
   "info": {
     "title": "ScreenConnect Gateway",
     "description": "Single REST API over ConnectWise ScreenConnect's built-in web API and the RESTful API Manager extension. All reads are GET. Responses carry `X-Gateway-Backend: restful|native`. Errors are always `{\"message\": \"...\"}`.",
-    "version": "1.3.0"
+    "version": "1.4.0"
   },
   "servers": [
     {
@@ -239,7 +239,7 @@
             },
             "headers": {
               "X-Gateway-Truncated": {
-                "description": "true/false when the upstream reports truncation (native); unknown when it gives no signal (restful). Never assume a complete fleet unless this is false.",
+                "description": "true/false when the upstream reports truncation (native GetLiveData); unknown when it gives no signal (restful). Never assume a complete fleet unless this is false.",
                 "schema": {
                   "type": "string",
                   "enum": [
@@ -510,9 +510,11 @@
               "type": "integer",
               "maximum": 2,
               "minimum": 0,
+              "description": "0 Support, 1 Meeting, 2 Access",
               "default": 2,
               "title": "Sessiontype"
-            }
+            },
+            "description": "0 Support, 1 Meeting, 2 Access"
           },
           {
             "name": "filter",
@@ -532,11 +534,38 @@
             "required": false,
             "schema": {
               "type": "integer",
-              "maximum": 10000,
+              "maximum": 100000,
               "minimum": 1,
+              "description": "sessionLimit (GetLiveData has no paging)",
               "default": 1000,
               "title": "Limit"
-            }
+            },
+            "description": "sessionLimit (GetLiveData has no paging)"
+          },
+          {
+            "name": "findSessionId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^([0-9a-fA-F-]{32,36})?$",
+              "description": "findSessionID",
+              "default": "",
+              "title": "Findsessionid"
+            },
+            "description": "findSessionID"
+          },
+          {
+            "name": "complete",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "If the result is truncated, re-request with ScreenConnect's untruncated count (up to 100,000) so X-Gateway-Truncated is false",
+              "default": false,
+              "title": "Complete"
+            },
+            "description": "If the result is truncated, re-request with ScreenConnect's untruncated count (up to 100,000) so X-Gateway-Truncated is false"
           },
           {
             "name": "backend",
@@ -573,7 +602,7 @@
             },
             "headers": {
               "X-Gateway-Truncated": {
-                "description": "true/false when the upstream reports truncation (native); unknown when it gives no signal (restful). Never assume a complete fleet unless this is false.",
+                "description": "true/false when the upstream reports truncation (native GetLiveData); unknown when it gives no signal (restful). Never assume a complete fleet unless this is false.",
                 "schema": {
                   "type": "string",
                   "enum": [
@@ -581,6 +610,12 @@
                     "false",
                     "unknown"
                   ]
+                }
+              },
+              "X-Gateway-Total-Count": {
+                "description": "Native UntruncatedSessionCount for the queried group, when ScreenConnect reports it",
+                "schema": {
+                  "type": "integer"
                 }
               },
               "X-Gateway-Resolved-Company": {
@@ -744,8 +779,10 @@
                   "type": "null"
                 }
               ],
+              "description": "Omit for all session types (both backends)",
               "title": "Sessiontype"
-            }
+            },
+            "description": "Omit for all session types (both backends)"
           },
           {
             "name": "backend",
@@ -786,7 +823,7 @@
             },
             "headers": {
               "X-Gateway-Truncated": {
-                "description": "true/false when the upstream reports truncation (native); unknown when it gives no signal (restful). Never assume a complete fleet unless this is false.",
+                "description": "true/false when the upstream reports truncation (native GetLiveData); unknown when it gives no signal (restful). Never assume a complete fleet unless this is false.",
                 "schema": {
                   "type": "string",
                   "enum": [
@@ -885,6 +922,7 @@
           "sessions"
         ],
         "summary": "Create Session",
+        "description": "RESTful CreateSession. All eight custom properties may be set at creation.",
         "operationId": "create_session",
         "parameters": [
           {
@@ -1033,6 +1071,47 @@
             }
           },
           {
+            "name": "sessionType",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 2,
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Native lookup hint: 0 Support, 1 Meeting, 2 Access",
+              "title": "Sessiontype"
+            },
+            "description": "Native lookup hint: 0 Support, 1 Meeting, 2 Access"
+          },
+          {
+            "name": "groupPath",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Native: session group path (sessionGroupPathParts); repeat for nested groups. Default: the group ScreenConnect reports for the session.",
+              "title": "Grouppath"
+            },
+            "description": "Native: session group path (sessionGroupPathParts); repeat for nested groups. Default: the group ScreenConnect reports for the session."
+          },
+          {
             "name": "backend",
             "in": "query",
             "required": false,
@@ -1155,7 +1234,7 @@
           "sessions"
         ],
         "summary": "Get Session Details",
-        "description": "Session plus events. Command output arrives as eventType 70.",
+        "description": "Session, events and connections. Command output arrives as eventType 70 (RanCommand).",
         "operationId": "get_session_details",
         "parameters": [
           {
@@ -1181,10 +1260,51 @@
                   "type": "null"
                 }
               ],
-              "description": "Session group used by the native backend (default 'All Machines')",
+              "description": "Native: single session group name (same as groupPath=<name>). Kept for compatibility.",
               "title": "Group"
             },
-            "description": "Session group used by the native backend (default 'All Machines')"
+            "description": "Native: single session group name (same as groupPath=<name>). Kept for compatibility."
+          },
+          {
+            "name": "groupPath",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Native: session group path (sessionGroupPathParts); repeat for nested groups. Default: the group ScreenConnect reports for the session.",
+              "title": "Grouppath"
+            },
+            "description": "Native: session group path (sessionGroupPathParts); repeat for nested groups. Default: the group ScreenConnect reports for the session."
+          },
+          {
+            "name": "sessionType",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 2,
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Native lookup hint: 0 Support, 1 Meeting, 2 Access",
+              "title": "Sessiontype"
+            },
+            "description": "Native lookup hint: 0 Support, 1 Meeting, 2 Access"
           },
           {
             "name": "backend",
@@ -1334,10 +1454,51 @@
                   "type": "null"
                 }
               ],
-              "description": "Session group used by the native backend (default 'All Machines')",
+              "description": "Native: single session group name (same as groupPath=<name>). Kept for compatibility.",
               "title": "Group"
             },
-            "description": "Session group used by the native backend (default 'All Machines')"
+            "description": "Native: single session group name (same as groupPath=<name>). Kept for compatibility."
+          },
+          {
+            "name": "groupPath",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Native: session group path (sessionGroupPathParts); repeat for nested groups. Default: the group ScreenConnect reports for the session.",
+              "title": "Grouppath"
+            },
+            "description": "Native: session group path (sessionGroupPathParts); repeat for nested groups. Default: the group ScreenConnect reports for the session."
+          },
+          {
+            "name": "sessionType",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 2,
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Native lookup hint: 0 Support, 1 Meeting, 2 Access",
+              "title": "Sessiontype"
+            },
+            "description": "Native lookup hint: 0 Support, 1 Meeting, 2 Access"
           },
           {
             "name": "backend",
@@ -1456,13 +1617,722 @@
         }
       }
     },
+    "/v1/raw/restful/sessions": {
+      "get": {
+        "tags": [
+          "raw"
+        ],
+        "summary": "Raw Search Sessions",
+        "description": "RESTful GetSessionsByFilter or GetSessionsByName (exactly one parameter).",
+        "operationId": "raw_search_sessions",
+        "parameters": [
+          {
+            "name": "filter",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "GetSessionsByFilter sessionFilter",
+              "title": "Filter"
+            },
+            "description": "GetSessionsByFilter sessionFilter"
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "GetSessionsByName sessionName",
+              "title": "Name"
+            },
+            "description": "GetSessionsByName sessionName"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RawResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (read key on a write, or source IP not allowed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream ScreenConnect error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required backend unavailable or not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Upstream ScreenConnect timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/raw/restful/sessions/{sessionId}": {
+      "get": {
+        "tags": [
+          "raw"
+        ],
+        "summary": "Raw Get Session",
+        "description": "RESTful GetSessionBySessionID.",
+        "operationId": "raw_get_session",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{32,36}$",
+              "title": "Sessionid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RawResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (read key on a write, or source IP not allowed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream ScreenConnect error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required backend unavailable or not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Upstream ScreenConnect timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/raw/restful/sessions/{sessionId}/details": {
+      "get": {
+        "tags": [
+          "raw"
+        ],
+        "summary": "Raw Get Session Details",
+        "description": "RESTful GetSessionDetailsBySessionID (Session, Events, Connections, GuestScreenshotContent).",
+        "operationId": "raw_get_session_details",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{32,36}$",
+              "title": "Sessionid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RawResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (read key on a write, or source IP not allowed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream ScreenConnect error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required backend unavailable or not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Upstream ScreenConnect timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/raw/native/live-data": {
+      "get": {
+        "tags": [
+          "raw"
+        ],
+        "summary": "Raw Get Live Data",
+        "description": "Native GetLiveData: Version, ProductVersion and the full ResponseInfoMap (HostSessionInfo with\nSessions, PathSessionGroupSummaries, AlternateSessionGroupSummaries, SessionGroupPath, Filter,\nUntruncatedSessionCount; ActionCenterInfo). Native times are seconds before `receivedAt`.",
+        "operationId": "raw_get_live_data",
+        "parameters": [
+          {
+            "name": "sessionType",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 2,
+              "minimum": 0,
+              "default": 2,
+              "title": "Sessiontype"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "sessionGroupPathParts; omit for ScreenConnect's default",
+              "title": "Path"
+            },
+            "description": "sessionGroupPathParts; omit for ScreenConnect's default"
+          },
+          {
+            "name": "filter",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Free-text search (web UI search box)",
+              "default": "",
+              "title": "Filter"
+            },
+            "description": "Free-text search (web UI search box)"
+          },
+          {
+            "name": "findSessionId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^([0-9a-fA-F-]{32,36})?$",
+              "default": "",
+              "title": "Findsessionid"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100000,
+              "minimum": 1,
+              "description": "sessionLimit",
+              "default": 1000,
+              "title": "Limit"
+            },
+            "description": "sessionLimit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RawResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (read key on a write, or source IP not allowed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream ScreenConnect error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required backend unavailable or not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Upstream ScreenConnect timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/raw/native/sessions/{sessionId}/details": {
+      "get": {
+        "tags": [
+          "raw"
+        ],
+        "summary": "Raw Get Native Session Details",
+        "description": "Native GetSessionDetails. Times are relative to the payload's BaseTime (epoch ms).",
+        "operationId": "raw_get_native_session_details",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F-]{32,36}$",
+              "title": "Sessionid"
+            }
+          },
+          {
+            "name": "groupPath",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Native: session group path (sessionGroupPathParts); repeat for nested groups. Default: the group ScreenConnect reports for the session.",
+              "title": "Grouppath"
+            },
+            "description": "Native: session group path (sessionGroupPathParts); repeat for nested groups. Default: the group ScreenConnect reports for the session."
+          },
+          {
+            "name": "sessionType",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 2,
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Native lookup hint: 0 Support, 1 Meeting, 2 Access",
+              "title": "Sessiontype"
+            },
+            "description": "Native lookup hint: 0 Support, 1 Meeting, 2 Access"
+          },
+          {
+            "name": "items",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "description": "SessionDetailsItems flags: 1 SessionInfo, 4 GuestScreenshotContent, 8 Events, 16 Connections, -1 All. Default 25 (everything except the screenshot).",
+              "default": 25,
+              "title": "Items"
+            },
+            "description": "SessionDetailsItems flags: 1 SessionInfo, 4 GuestScreenshotContent, 8 Events, 16 Connections, -1 All. Default 25 (everything except the screenshot)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RawResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (read key on a write, or source IP not allowed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream ScreenConnect error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required backend unavailable or not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Upstream ScreenConnect timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{sessionId}/commands": {
       "post": {
         "tags": [
           "sessions"
         ],
         "summary": "Send Command",
-        "description": "Queue a command. Poll /details for eventType 70 to read the output.",
+        "description": "Queue a command. Poll /details for eventType 70 (RanCommand) to read the output.",
         "operationId": "send_command",
         "parameters": [
           {
@@ -1515,6 +2385,142 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/QueuedResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (read key on a write, or source IP not allowed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream ScreenConnect error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required backend unavailable or not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Upstream ScreenConnect timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/session-events": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Add Session Events",
+        "description": "Native AddSessionEvents: one batch of up to 100 events for sessions in one group path.\nEvent types are validated against ScreenConnect's SessionEventType enum and ALLOWED_EVENT_TYPES.",
+        "operationId": "add_session_events",
+        "parameters": [
+          {
+            "name": "backend",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "restful",
+                    "native"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Force a specific upstream backend (disables fallback). Normally omitted.",
+              "title": "Backend"
+            },
+            "description": "Force a specific upstream backend (disables fallback). Normally omitted."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionEventsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueuedEvents"
                 }
               }
             }
@@ -2462,6 +3468,142 @@
           }
         }
       }
+    },
+    "/v1/users/save": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Save User",
+        "description": "Native SecurityService.SaveUser: create (oldUserName null), update, or rename (newUserName differs).\nUpdates replace every field, so they must be stated explicitly; a null password keeps the current one.",
+        "operationId": "save_user",
+        "parameters": [
+          {
+            "name": "backend",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "restful",
+                    "native"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Force a specific upstream backend (disables fallback). Normally omitted.",
+              "title": "Backend"
+            },
+            "description": "Force a specific upstream backend (disables fallback). Normally omitted."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveUserRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedUser"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden (read key on a write, or source IP not allowed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Upstream ScreenConnect error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required backend unavailable or not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Upstream ScreenConnect timeout",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2545,7 +3687,37 @@
               }
             ],
             "title": "Group",
-            "description": "Session group for the native fallback (default 'All Machines')"
+            "description": "Native fallback: single session group name (same as groupPath=[group])"
+          },
+          "groupPath": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "minItems": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grouppath",
+            "description": "Native fallback: session group path"
+          },
+          "sessionType": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sessiontype",
+            "description": "Native lookup hint"
           }
         },
         "additionalProperties": false,
@@ -2603,7 +3775,7 @@
               }
             ],
             "title": "Processtype",
-            "description": "2 = agent (guest) process"
+            "description": "1 = host (technician), 2 = guest (agent)"
           },
           "participantName": {
             "anyOf": [
@@ -2627,6 +3799,17 @@
             ],
             "title": "Clienttype"
           },
+          "clientVersion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clientversion"
+          },
           "networkAddress": {
             "anyOf": [
               {
@@ -2638,6 +3821,18 @@
             ],
             "title": "Networkaddress"
           },
+          "attributes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attributes",
+            "description": "Restful only"
+          },
           "events": {
             "items": {
               "$ref": "#/components/schemas/SessionEvent"
@@ -2647,9 +3842,6 @@
           }
         },
         "type": "object",
-        "required": [
-          "events"
-        ],
         "title": "Connection"
       },
       "ConnectionLogs": {
@@ -2723,6 +3915,17 @@
             "title": "Devicetype",
             "description": "Custom Property 4 (Laptop/Workstation/Server/Domain Controller)"
           },
+          "customProperties": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IndexedCustomProperties"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Any of the 8 properties by index (\"0\"-\"7\"). A named field (company/site/department/deviceType) and its index may both be given only with the same value; different values are rejected (400)."
+          },
           "sessionType": {
             "type": "integer",
             "maximum": 2.0,
@@ -2794,6 +3997,29 @@
             "type": "boolean",
             "title": "Forcepasswordchange",
             "default": false
+          },
+          "userSource": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Usersource",
+            "default": "InternalMembershipProvider"
+          },
+          "comment": {
+            "type": "string",
+            "title": "Comment",
+            "default": ""
+          },
+          "passwordQuestion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Passwordquestion",
+            "description": "SaveUser passwordQuestion argument, which ScreenConnect uses for the user's MFA/OTP setting: \"email\", \"<provider>:<value>\", or null for none. Alias: otpTokenString."
           }
         },
         "additionalProperties": false,
@@ -2813,6 +4039,19 @@
           "name": {
             "type": "string",
             "title": "Name"
+          },
+          "raw": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw",
+            "description": "Upstream CreateSession response, verbatim"
           }
         },
         "type": "object",
@@ -2916,69 +4155,48 @@
           "customProperties": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ExtraCustomProperties"
+                "$ref": "#/components/schemas/IndexedCustomProperties"
               },
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Any of the 8 properties by index (\"0\"-\"7\"). A named field (company/site/department/deviceType) and its index may both be given only with the same value; different values are rejected (400)."
+          },
+          "groupPath": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "minItems": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grouppath",
+            "description": "Native: sessionGroupPathParts for UpdateSessionCustomPropertyValue"
+          },
+          "sessionType": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sessiontype",
+            "description": "Native lookup hint"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "title": "CustomPropertiesUpdate"
-      },
-      "ExtraCustomProperties": {
-        "properties": {
-          "4": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "4"
-          },
-          "5": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "5"
-          },
-          "6": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "6"
-          },
-          "7": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "7"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "ExtraCustomProperties",
-        "description": "Custom Properties 5-8, keyed by zero-based index."
       },
       "GroupSessions": {
         "properties": {
@@ -3053,6 +4271,102 @@
         ],
         "title": "Health"
       },
+      "IndexedCustomProperties": {
+        "properties": {
+          "0": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "0"
+          },
+          "1": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "1"
+          },
+          "2": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "2"
+          },
+          "3": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "3"
+          },
+          "4": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "4"
+          },
+          "5": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "5"
+          },
+          "6": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "6"
+          },
+          "7": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "7"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "IndexedCustomProperties",
+        "description": "Custom properties by zero-based index (\"0\" = Custom Property 1 ... \"7\" = Custom Property 8)."
+      },
       "MessageRequest": {
         "properties": {
           "from": {
@@ -3107,6 +4421,27 @@
         ],
         "title": "OkResult"
       },
+      "QueuedEvents": {
+        "properties": {
+          "queued": {
+            "type": "integer",
+            "title": "Queued"
+          },
+          "sessionIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Sessionids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "queued",
+          "sessionIds"
+        ],
+        "title": "QueuedEvents"
+      },
       "QueuedResult": {
         "properties": {
           "sessionId": {
@@ -3124,6 +4459,40 @@
           "queued"
         ],
         "title": "QueuedResult"
+      },
+      "RawResponse": {
+        "properties": {
+          "backend": {
+            "type": "string",
+            "enum": [
+              "restful",
+              "native"
+            ],
+            "title": "Backend"
+          },
+          "upstreamMethod": {
+            "type": "string",
+            "title": "Upstreammethod"
+          },
+          "receivedAt": {
+            "type": "string",
+            "title": "Receivedat",
+            "description": "ISO-8601 UTC. Native times in the payload are relative (seconds/ms before this or BaseTime)"
+          },
+          "response": {
+            "title": "Response",
+            "description": "Exactly what ScreenConnect returned; no fields removed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "backend",
+          "upstreamMethod",
+          "receivedAt",
+          "response"
+        ],
+        "title": "RawResponse",
+        "description": "Upstream payload, verbatim, with source metadata."
       },
       "RenameRequest": {
         "properties": {
@@ -3157,6 +4526,140 @@
           "name"
         ],
         "title": "RenamedSession"
+      },
+      "SaveUserRequest": {
+        "properties": {
+          "userSource": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Usersource",
+            "description": "userSourceName",
+            "default": "InternalMembershipProvider"
+          },
+          "oldUserName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldusername",
+            "description": "Existing user to update/rename (originalUserName). Null creates a new user."
+          },
+          "newUserName": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Newusername",
+            "description": "Resulting user name (a different value renames)"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password",
+            "description": "Null keeps the existing password (updates only)"
+          },
+          "verifyPassword": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verifypassword",
+            "description": "Defaults to password; must match it if given"
+          },
+          "passwordQuestion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Passwordquestion",
+            "description": "SaveUser passwordQuestion argument, which ScreenConnect uses for the user's MFA/OTP setting: \"email\", \"<provider>:<value>\", or null for none. Alias: otpTokenString."
+          },
+          "displayName": {
+            "type": "string",
+            "title": "Displayname",
+            "default": ""
+          },
+          "comment": {
+            "type": "string",
+            "title": "Comment",
+            "default": ""
+          },
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "default": ""
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Roles",
+            "description": "roleNames"
+          },
+          "forcePasswordChange": {
+            "type": "boolean",
+            "title": "Forcepasswordchange",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "newUserName"
+        ],
+        "title": "SaveUserRequest",
+        "description": "Mirrors SecurityService.SaveUser. oldUserName null creates a user; set it to update or rename one."
+      },
+      "SavedUser": {
+        "properties": {
+          "userName": {
+            "type": "string",
+            "title": "Username"
+          },
+          "oldUserName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldusername",
+            "description": "Set when an existing user was updated or renamed"
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          }
+        },
+        "type": "object",
+        "required": [
+          "userName",
+          "created"
+        ],
+        "title": "SavedUser"
       },
       "Session": {
         "properties": {
@@ -3389,6 +4892,13 @@
             },
             "type": "array",
             "title": "Events"
+          },
+          "connections": {
+            "items": {
+              "$ref": "#/components/schemas/Connection"
+            },
+            "type": "array",
+            "title": "Connections"
           }
         },
         "type": "object",
@@ -3421,7 +4931,7 @@
               }
             ],
             "title": "Eventtype",
-            "description": "44 RanCommand, 70 ProcessedCommand (command output)"
+            "description": "SC.types.SessionEventType, e.g. 44 QueuedCommand, 70 RanCommand (command output), 32 AddedNote"
           },
           "time": {
             "anyOf": [
@@ -3432,7 +4942,19 @@
                 "type": "null"
               }
             ],
-            "title": "Time"
+            "title": "Time",
+            "description": "ISO-8601 (native times are converted from ms before BaseTime)"
+          },
+          "host": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Host"
           },
           "data": {
             "anyOf": [
@@ -3444,10 +4966,122 @@
               }
             ],
             "title": "Data"
+          },
+          "connectionId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connectionid"
+          },
+          "correlationEventId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlationeventid"
           }
         },
         "type": "object",
         "title": "SessionEvent"
+      },
+      "SessionEventEntry": {
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F-]{32,36}$",
+            "title": "Sessionid"
+          },
+          "eventType": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Eventtype",
+            "description": "SC.types.SessionEventType name or number, e.g. QueuedCommand / 44"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          },
+          "connectionId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connectionid"
+          },
+          "correlationEventId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correlationeventid"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "sessionId",
+          "eventType"
+        ],
+        "title": "SessionEventEntry"
+      },
+      "SessionEventsRequest": {
+        "properties": {
+          "groupPath": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Grouppath",
+            "description": "sessionGroupPathParts the sessions belong to"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/SessionEventEntry"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Events"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "groupPath",
+          "events"
+        ],
+        "title": "SessionEventsRequest"
       },
       "SessionGroup": {
         "properties": {
