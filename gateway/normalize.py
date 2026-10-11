@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 CUSTOM_PROPERTY_COUNT = 8
@@ -11,6 +13,9 @@ ACCESS_SESSION_TYPE = 2
 # LogonSessionAttributes bits, inferred from live data (not documented by ConnectWise):
 LOGON_INTERACTIVE_FLAG = 0x1  # a Windows logon session (absent on "[Backstage]")
 LOGON_NO_USER_FLAG = 0x8  # nobody signed in at that session (DisplayName "Console")
+# ScreenConnect's "never" is 0001-01-01 (restful) or -1.797e308 seconds (native).
+MIN_VALID_YEAR = 2000
+MAX_NATIVE_AGE_SECONDS = 50 * 365 * 86400
 
 
 def pad_custom_properties(values: Any) -> list[str]:
@@ -30,7 +35,89 @@ def escape_filter_value(value: str) -> str:
 
 
 def _first(*values: Any) -> Any:
-    return next((value for value in values if value not in (None, "")), None)
+    """First value that isn't null/blank; strings are trimmed (a serial of " " means none)."""
+    for value in values:
+        if isinstance(value, str):
+            if value.strip():
+                return value.strip()
+        elif value is not None:
+            return value
+    return None
+
+
+def _flag(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _iso_utc(moment: datetime) -> str:
+    return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def normalize_timestamp(value: Any) -> str | None:
+    """ISO-8601 UTC ("...Z"), or None for missing, unparseable, timezone-less or sentinel values."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.year < MIN_VALID_YEAR:
+        return None
+    return _iso_utc(parsed)
+
+
+def seconds_before(seconds: Any, reference: datetime) -> str | None:
+    """The native API reports times as seconds before a reference instant."""
+    if isinstance(seconds, bool) or not isinstance(seconds, int | float):
+        return None
+    if not math.isfinite(seconds) or not 0 <= seconds <= MAX_NATIVE_AGE_SECONDS:
+        return None
+    return _iso_utc(reference - timedelta(seconds=seconds))
+
+
+def absolutize_native_live_session(raw: dict[str, Any], received_at: datetime) -> dict[str, Any]:
+    """GetLiveData's LastGuestDisconnectedEventTime is seconds before the response; verified
+    against restful within ~2 s. Its LastConnectedEventTime also counts host connections, so it
+    is deliberately NOT used as lastGuestConnectedEventTime."""
+    converted = dict(raw)
+    converted["LastGuestDisconnectedEventTime"] = seconds_before(
+        raw.get("LastGuestDisconnectedEventTime"), received_at
+    )
+    return converted
+
+
+NATIVE_DETAIL_FIELDS = ("GuestMachineSerialNumber", "GuestHardwareNetworkAddress")
+
+
+def merge_native_details(live: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
+    """GetSessionDetails' Session lacks SessionID/Name/custom properties but carries serial,
+    MAC (both verified equal to restful) and GuestInfoUpdateTime as seconds before BaseTime (ms)."""
+    session = details.get("Session") or {}
+    merged = dict(live)
+    for key in NATIVE_DETAIL_FIELDS:
+        if key in session:
+            merged[key] = session[key]
+    reference = _native_base_time(details)
+    merged["GuestInfoUpdateTime"] = seconds_before(session.get("GuestInfoUpdateTime"), reference) if reference else None
+    return merged
+
+
+def _native_base_time(details: dict[str, Any]) -> datetime | None:
+    base = details.get("BaseTime")  # epoch milliseconds
+    if isinstance(base, int | float) and not isinstance(base, bool) and math.isfinite(base):
+        return datetime.fromtimestamp(base / 1000, UTC)
+    return None
+
+
+def absolutize_native_events(details: dict[str, Any]) -> list[dict[str, Any]]:
+    """GetSessionDetails event Time is milliseconds before BaseTime (verified to 1 ms vs restful)."""
+    reference = _native_base_time(details)
+    events = []
+    for event in details.get("Events") or []:
+        time = event.get("Time")
+        converted = seconds_before(time / 1000, reference) if reference and isinstance(time, int | float) else None
+        events.append({**event, "Time": converted})
+    return events
 
 
 def logged_on_users(raw: dict[str, Any]) -> list[str]:
@@ -76,6 +163,16 @@ def normalize_session(raw: dict[str, Any]) -> dict[str, Any]:
         "deviceType": properties[3],
         "customProperties": properties,
         "isOnline": is_online,
+        "guestMachineSerialNumber": _first(raw.get("GuestMachineSerialNumber"), guest.get("MachineSerialNumber")),
+        "guestHardwareNetworkAddress": _first(
+            raw.get("GuestHardwareNetworkAddress"), guest.get("HardwareNetworkAddress")
+        ),
+        "guestClientVersion": _first(raw.get("GuestClientVersion")),
+        "guestInfoUpdateTime": normalize_timestamp(raw.get("GuestInfoUpdateTime")),
+        "lastGuestConnectedEventTime": normalize_timestamp(raw.get("LastGuestConnectedEventTime")),
+        "lastGuestDisconnectedEventTime": normalize_timestamp(raw.get("LastGuestDisconnectedEventTime")),
+        "isDeleted": _flag(raw.get("IsDeleted")),
+        "isEnded": _flag(raw.get("IsEnded")),
     }
 
 
@@ -84,7 +181,7 @@ def normalize_event(raw: dict[str, Any]) -> dict[str, Any]:
     return {
         "eventId": None if event_id is None else str(event_id),
         "eventType": raw.get("EventType"),
-        "time": raw.get("Time"),
+        "time": raw.get("Time") if isinstance(raw.get("Time"), str) else None,
         "data": raw.get("Data"),
     }
 

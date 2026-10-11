@@ -7,11 +7,15 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Any, Generic, Literal, TypeVar
 
 from .config import Settings
 from .errors import AmbiguousCompanyError, BadRequestError, ForbiddenError, GatewayError, NotFoundError, UpstreamTimeoutError
 from .normalize import (
+    absolutize_native_events,
+    absolutize_native_live_session,
+    merge_native_details,
     build_command,
     companies_from_sessions,
     companies_from_summaries,
@@ -44,6 +48,7 @@ class Served(Generic[T]):
     value: T
     backend: str
     resolved_company: str | None = None  # raw id, set when a non-exact company id was resolved
+    truncated: bool | None = None  # list reads: None means the upstream gave no truncation signal
 
 
 class Gateway:
@@ -54,8 +59,10 @@ class Gateway:
         native: NativeClient,
         *,
         clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ):
         self.settings = settings
+        self._wall_clock = wall_clock
         self.restful = restful
         self.native = native
         self._clients = {"restful": restful, "native": native}
@@ -143,11 +150,21 @@ class Gateway:
             "ActionCenterInfo": {},
         }
         data = await self.native.call("PageService.ashx/GetLiveData", [request, 0], idempotent=True)
-        return ((data or {}).get("ResponseInfoMap") or {}).get("HostSessionInfo") or {}
+        received_at = self._wall_clock()
+        info = dict(((data or {}).get("ResponseInfoMap") or {}).get("HostSessionInfo") or {})
+        info["Sessions"] = [absolutize_native_live_session(raw, received_at) for raw in info.get("Sessions") or []]
+        return info
 
-    async def _native_find_session(self, session_id: str) -> dict[str, Any]:
+    @staticmethod
+    def _truncated(info: dict[str, Any]) -> bool | None:
+        total = info.get("UntruncatedSessionCount")
+        if not isinstance(total, int):
+            return None
+        return total > len(info.get("Sessions") or [])
+
+    async def _native_find_session(self, session_id: str, group: str | None = None) -> dict[str, Any]:
         info = await self._live_data(
-            path=[self.settings.native_default_group],
+            path=[group or self.settings.native_default_group],
             session_type=2,
             find_session_id=session_id,
         )
@@ -254,16 +271,24 @@ class Gateway:
             expression = f"CustomProperty1 = '{escape_filter_value(company_id)}'"
             return exact(await self._restful_sessions_by_filter(expression))
 
+        native_truncated: bool | None = None
+
         async def native() -> list[dict[str, Any]]:
+            nonlocal native_truncated
             info = await self._live_data(
                 path=[self.settings.company_group_path, company_id], session_type=session_type
             )
+            native_truncated = self._truncated(info)
             return exact(info.get("Sessions") or [])
 
         served = await self._dispatch({"restful": restful, "native": native}, forced=forced)
         if not served.value:
             raise NotFoundError(f"no sessions found for company '{requested_id}'", backend=served.backend)
-        return replace(served, resolved_company=company_id) if resolved else served
+        return replace(
+            served,
+            resolved_company=company_id if resolved else None,
+            truncated=native_truncated if served.backend == "native" else None,
+        )
 
     # ---------- session groups ----------
 
@@ -289,10 +314,14 @@ class Gateway:
                 path = [path[0], raw_id, *path[2:]]
                 resolved_company = raw_id
 
+        native_truncated: bool | None = None
+
         async def native() -> dict[str, Any]:
+            nonlocal native_truncated
             info = await self._live_data(
                 path=path, session_type=session_type, filter_expression=filter_expression, limit=limit
             )
+            native_truncated = self._truncated(info)
             levels = info.get("PathSessionGroupSummaries") or []
             last_level = levels[-1] if levels else []
             return {
@@ -301,7 +330,7 @@ class Gateway:
             }
 
         served = await self._dispatch({"native": native}, forced=forced)
-        return replace(served, resolved_company=resolved_company) if resolved_company else served
+        return replace(served, resolved_company=resolved_company, truncated=native_truncated)
 
     # ---------- sessions (reads) ----------
 
@@ -335,22 +364,33 @@ class Gateway:
                 raise BadRequestError("filter expressions require the restful backend")
             return await self._dispatch({"restful": restful}, forced=forced)
 
+        native_truncated: bool | None = None
+
         async def native() -> list[dict[str, Any]]:
+            nonlocal native_truncated
             info = await self._live_data(
                 path=[self.settings.native_default_group],
                 session_type=2 if session_type is None else session_type,
                 filter_expression=name,  # free-text search, narrowed to exact names below
             )
+            native_truncated = self._truncated(info)
             return [normalize_session(raw) for raw in info.get("Sessions") or [] if raw.get("Name") == name]
 
-        return await self._dispatch({"restful": restful, "native": native}, forced=forced)
+        served = await self._dispatch({"restful": restful, "native": native}, forced=forced)
+        return replace(served, truncated=native_truncated) if served.backend == "native" else served
 
     async def get_session(self, session_id: str, forced: str | None = None) -> Served[dict[str, Any]]:
         async def restful() -> dict[str, Any]:
             return normalize_session(await self._restful_get_session(session_id))
 
         async def native() -> dict[str, Any]:
-            return normalize_session(await self._native_find_session(session_id))
+            live = await self._native_find_session(session_id)
+            try:
+                live = merge_native_details(live, await self._native_details(session_id, None))
+            except GatewayError as exc:
+                # One extra read for a single session; without it the detail-only fields stay null.
+                logger.info("native details unavailable for %s: %s", session_id, exc.message)
+            return normalize_session(live)
 
         return await self._dispatch({"restful": restful, "native": native}, forced=forced)
 
@@ -367,11 +407,13 @@ class Gateway:
             }
 
         async def native() -> dict[str, Any]:
+            # The details Session object has no SessionID/Name/custom properties; take those
+            # from the live-data record and merge the detail-only fields on top.
+            live = await self._native_find_session(session_id, group)
             data = await self._native_details(session_id, group)
-            session = data["Session"]
             return {
-                "session": normalize_session(session),
-                "events": normalize_events(data.get("Events"), session.get("Events")),
+                "session": normalize_session(merge_native_details(live, data)),
+                "events": normalize_events(absolutize_native_events(data)),
             }
 
         return await self._dispatch({"restful": restful, "native": native}, forced=forced)

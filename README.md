@@ -92,6 +92,34 @@ All responses are JSON. Errors are always `{"message": "..."}`. Every response h
 | `PATCH /v1/sessions/{id}/custom-properties` | update_custom_properties | both |
 | `POST /v1/users` | create_user | native only |
 
+### Session fields
+
+Every session response (`search_sessions`, `list_company_sessions`, `list_group_sessions`, `get_session`, and the `session` inside `get_session_details`) has the same shape:
+
+- **Identity:** `sessionId, name, sessionType`
+- **Guest details:** `guestMachineName, guestLoggedOnUserName, loggedOnUsers, operatingSystem`
+- **Custom properties:** `company, site, department, deviceType, customProperties`
+- **Status:** `isOnline`
+- **Device evidence:** the eight fields in the table below
+
+Values are `null` when the upstream gives no evidence; `false` is never turned into `null` or the other way round. `isOnline` is true only for an active guest (ProcessType 2) connection, so a technician connection alone doesn't count.
+
+| Field | RESTful source | Native source |
+|---|---|---|
+| `guestMachineSerialNumber` | `GuestInfo.MachineSerialNumber` | `GetSessionDetails` only, so get-by-id/details; **null in native lists** |
+| `guestHardwareNetworkAddress` (MAC) | `GuestInfo.HardwareNetworkAddress` | same as serial |
+| `guestClientVersion` | `GuestClientVersion` | `GuestClientVersion` (identical) |
+| `guestInfoUpdateTime` | `GuestInfoUpdateTime` | details: `BaseTime` − seconds; **null in native lists** |
+| `lastGuestConnectedEventTime` | `LastGuestConnectedEventTime` | **always null** |
+| `lastGuestDisconnectedEventTime` | `LastGuestDisconnectedEventTime` | live data: response time − seconds (±2 s) |
+| `isDeleted` / `isEnded` | `IsDeleted` / `IsEnded` | **always null** |
+
+**Native lastGuestConnectedEventTime is always null:** the native `LastConnectedEventTime` also counts technician connections, so it isn't a guest-only equivalent.
+
+All times are ISO-8601 UTC (`...Z`). ScreenConnect's "never" values (`0001-01-01` on RESTful, `-1.797e308` seconds on native) and timestamps without a timezone become `null`, never the current time. Every native mapping above was checked against the RESTful values for the same machines on a live instance.
+
+**Fleet inventory:** `GET /v1/sessions?filter=SessionType = 'Access'` returns every Access session, including those with a blank company (RESTful backend). List responses carry `X-Gateway-Truncated`: `false`/`true` when the upstream reports it (native), `unknown` when it gives no signal (RESTful). Don't treat a list as the complete fleet unless the header is `false`.
+
 Commands are asynchronous. `send_command` returns `202 {sessionId, queued: true}`. Poll `get_session_details` for an `eventType: 70` (ProcessedCommand) event whose `data` is the output; `44` is the RanCommand event.
 
 ### Backend selection

@@ -5,6 +5,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
 
@@ -24,14 +25,22 @@ from .service import Gateway, Served
 from .upstream.native import NativeClient
 from .upstream.restful import RestfulClient
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 logger = logging.getLogger("gateway")
 
 BACKEND_HEADER = "X-Gateway-Backend"
 RESOLVED_COMPANY_HEADER = "X-Gateway-Resolved-Company"
+TRUNCATED_HEADER = "X-Gateway-Truncated"
+TRUNCATED_HEADER_DOC = {
+    "description": "true/false when the upstream reports truncation (native); unknown when it gives no "
+    "signal (restful). Never assume a complete fleet unless this is false.",
+    "schema": {"type": "string", "enum": ["true", "false", "unknown"]},
+}
+LIST_RESPONSES: dict[int | str, dict[str, Any]] = {200: {"headers": {TRUNCATED_HEADER: TRUNCATED_HEADER_DOC}}}
 COMPANY_RESOLUTION_RESPONSES: dict[int | str, dict[str, Any]] = {
     200: {
         "headers": {
+            TRUNCATED_HEADER: TRUNCATED_HEADER_DOC,
             RESOLVED_COMPANY_HEADER: {
                 "description": "URL-encoded raw company id, present when the given id matched only "
                 "case/whitespace-insensitively (e.g. a lowercased Rewst mapping id)",
@@ -57,8 +66,10 @@ GroupParam = Annotated[
 ]
 
 
-def served(response: Response, result: Served[Any]) -> Any:
+def served(response: Response, result: Served[Any], *, listing: bool = False) -> Any:
     response.headers[BACKEND_HEADER] = result.backend
+    if listing:
+        response.headers[TRUNCATED_HEADER] = {True: "true", False: "false", None: "unknown"}[result.truncated]
     if result.resolved_company is not None:
         response.headers[RESOLVED_COMPANY_HEADER] = quote(result.resolved_company, safe="")
     return result.value
@@ -70,6 +81,7 @@ def create_app(
     restful_transport: httpx.AsyncBaseTransport | None = None,
     native_transport: httpx.AsyncBaseTransport | None = None,
     clock: Callable[[], float] = time.monotonic,
+    wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> FastAPI:
     install_redaction()
     secret_registry.add(*settings.secrets)
@@ -89,7 +101,7 @@ def create_app(
         transport=native_transport,
         clock=clock,
     )
-    gateway = Gateway(settings, restful, native, clock=clock)
+    gateway = Gateway(settings, restful, native, clock=clock, wall_clock=wall_clock)
     limiter = RateLimiter(
         {"read": READ_LIMIT_PER_MINUTE, "write": WRITE_LIMIT_PER_MINUTE}, clock=clock
     )
@@ -282,7 +294,7 @@ def create_app(
         session_type: Annotated[int, Query(alias="sessionType", ge=0, le=2)] = 2,
         backend: BackendParam = None,
     ):
-        return served(response, await gateway.list_company_sessions(company_id, session_type, backend))
+        return served(response, await gateway.list_company_sessions(company_id, session_type, backend), listing=True)
 
     @v1.get(
         "/session-groups",
@@ -310,9 +322,15 @@ def create_app(
         limit: Annotated[int, Query(ge=1, le=10_000)] = 1000,
         backend: BackendParam = None,
     ):
-        return served(response, await gateway.list_group_sessions(path, session_type, filter, limit, backend))
+        return served(response, await gateway.list_group_sessions(path, session_type, filter, limit, backend), listing=True)
 
-    @v1.get("/sessions", operation_id="search_sessions", response_model=list[models.Session], tags=["sessions"])
+    @v1.get(
+        "/sessions",
+        operation_id="search_sessions",
+        response_model=list[models.Session],
+        tags=["sessions"],
+        responses=LIST_RESPONSES,
+    )
     async def search_sessions(
         response: Response,
         filter: Annotated[
@@ -323,12 +341,14 @@ def create_app(
         session_type: Annotated[int | None, Query(alias="sessionType", ge=0, le=2)] = None,
         backend: BackendParam = None,
     ):
-        """Provide exactly one of `filter` or `name`."""
+        """Provide exactly one of `filter` or `name`. For the whole Access fleet, including sessions
+        with a blank company, use filter=SessionType = 'Access'."""
         return served(
             response,
             await gateway.search_sessions(
                 filter_expression=filter, name=name, session_type=session_type, forced=backend
             ),
+            listing=True,
         )
 
     @v1.get("/sessions/{sessionId}", operation_id="get_session", response_model=models.Session, tags=["sessions"])

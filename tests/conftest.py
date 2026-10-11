@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterator
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -20,6 +21,7 @@ RESTFUL_SECRET = "restful-secret-abcdef"
 PASSWORD = "sc-password-xyz123"
 ANTI_FORGERY = "anti-forgery-token-123456"
 SESSION_ID = "11111111-2222-3333-4444-555555555555"
+FIXED_NOW = datetime(2026, 10, 11, 12, 0, 0, tzinfo=UTC)
 
 Handler = Callable[[Any], Any]
 
@@ -142,6 +144,7 @@ def make_client(fake: FakeScreenConnect, clock: Clock) -> Iterator[Callable[...,
             restful_transport=httpx.MockTransport(fake.handle_restful),
             native_transport=httpx.MockTransport(fake.handle_native),
             clock=clock,
+            wall_clock=lambda: FIXED_NOW,
         )
         client = TestClient(app, client=client_addr, raise_server_exceptions=False)
         client.__enter__()

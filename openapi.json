@@ -3,7 +3,7 @@
   "info": {
     "title": "ScreenConnect Gateway",
     "description": "Single REST API over ConnectWise ScreenConnect's built-in web API and the RESTful API Manager extension. All reads are GET. Responses carry `X-Gateway-Backend: restful|native`. Errors are always `{\"message\": \"...\"}`.",
-    "version": "1.2.0"
+    "version": "1.3.0"
   },
   "servers": [
     {
@@ -238,6 +238,17 @@
               }
             },
             "headers": {
+              "X-Gateway-Truncated": {
+                "description": "true/false when the upstream reports truncation (native); unknown when it gives no signal (restful). Never assume a complete fleet unless this is false.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true",
+                    "false",
+                    "unknown"
+                  ]
+                }
+              },
               "X-Gateway-Resolved-Company": {
                 "description": "URL-encoded raw company id, present when the given id matched only case/whitespace-insensitively (e.g. a lowercased Rewst mapping id)",
                 "schema": {
@@ -561,6 +572,17 @@
               }
             },
             "headers": {
+              "X-Gateway-Truncated": {
+                "description": "true/false when the upstream reports truncation (native); unknown when it gives no signal (restful). Never assume a complete fleet unless this is false.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true",
+                    "false",
+                    "unknown"
+                  ]
+                }
+              },
               "X-Gateway-Resolved-Company": {
                 "description": "URL-encoded raw company id, present when the given id matched only case/whitespace-insensitively (e.g. a lowercased Rewst mapping id)",
                 "schema": {
@@ -668,7 +690,7 @@
           "sessions"
         ],
         "summary": "Search Sessions",
-        "description": "Provide exactly one of `filter` or `name`.",
+        "description": "Provide exactly one of `filter` or `name`. For the whole Access fleet, including sessions\nwith a blank company, use filter=SessionType = 'Access'.",
         "operationId": "search_sessions",
         "parameters": [
           {
@@ -759,6 +781,19 @@
                     "$ref": "#/components/schemas/Session"
                   },
                   "title": "Response Search Sessions"
+                }
+              }
+            },
+            "headers": {
+              "X-Gateway-Truncated": {
+                "description": "true/false when the upstream reports truncation (native); unknown when it gives no signal (restful). Never assume a complete fleet unless this is false.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true",
+                    "false",
+                    "unknown"
+                  ]
                 }
               }
             }
@@ -3234,6 +3269,102 @@
             ],
             "title": "Isonline",
             "description": "Agent connected (an active guest connection). Null only if the upstream omits connection data."
+          },
+          "guestMachineSerialNumber": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guestmachineserialnumber",
+            "description": "Restful: GuestInfo.MachineSerialNumber. Native: get_session/details only (null in lists)."
+          },
+          "guestHardwareNetworkAddress": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guesthardwarenetworkaddress",
+            "description": "MAC address. Restful: GuestInfo.HardwareNetworkAddress. Native: get_session/details only."
+          },
+          "guestClientVersion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guestclientversion",
+            "description": "ScreenConnect agent version. Both backends."
+          },
+          "guestInfoUpdateTime": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guestinfoupdatetime",
+            "description": "ISO-8601 UTC. When the agent last reported guest info. Native: get_session/details only."
+          },
+          "lastGuestConnectedEventTime": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastguestconnectedeventtime",
+            "description": "ISO-8601 UTC. Restful only; native has no guest-only equivalent (null)."
+          },
+          "lastGuestDisconnectedEventTime": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastguestdisconnectedeventtime",
+            "description": "ISO-8601 UTC. Both backends (native is derived from relative seconds, \u00b12 s)."
+          },
+          "isDeleted": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Isdeleted",
+            "description": "Restful only; null from native."
+          },
+          "isEnded": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Isended",
+            "description": "Restful only; null from native."
           }
         },
         "type": "object",

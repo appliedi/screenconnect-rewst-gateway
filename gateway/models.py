@@ -57,6 +57,25 @@ class Session(CamelModel):
     device_type: str = Field(description="Custom Property 4 (Laptop/Workstation/Server/Domain Controller)")
     custom_properties: list[str] = Field(min_length=8, max_length=8)
     is_online: bool | None = Field(None, description="Agent connected (an active guest connection). Null only if the upstream omits connection data.")
+    guest_machine_serial_number: str | None = Field(
+        None, description="Restful: GuestInfo.MachineSerialNumber. Native: get_session/details only (null in lists)."
+    )
+    guest_hardware_network_address: str | None = Field(
+        None, description="MAC address. Restful: GuestInfo.HardwareNetworkAddress. Native: get_session/details only."
+    )
+    guest_client_version: str | None = Field(None, description="ScreenConnect agent version. Both backends.")
+    guest_info_update_time: str | None = Field(
+        None,
+        description="ISO-8601 UTC. When the agent last reported guest info. Native: get_session/details only.",
+    )
+    last_guest_connected_event_time: str | None = Field(
+        None, description="ISO-8601 UTC. Restful only; native has no guest-only equivalent (null)."
+    )
+    last_guest_disconnected_event_time: str | None = Field(
+        None, description="ISO-8601 UTC. Both backends (native is derived from relative seconds, ±2 s)."
+    )
+    is_deleted: bool | None = Field(None, description="Restful only; null from native.")
+    is_ended: bool | None = Field(None, description="Restful only; null from native.")
 
 
 class SessionEvent(CamelModel):
