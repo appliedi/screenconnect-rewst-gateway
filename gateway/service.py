@@ -37,6 +37,7 @@ from .normalize import (
     pad_custom_properties,
 )
 from .sc_types import (
+    canonical_user_name,
     DETAILS_CONNECTIONS,
     DETAILS_EVENTS,
     DETAILS_SESSION_INFO,
@@ -819,9 +820,10 @@ class Gateway:
             raise ForbiddenError("user management is disabled; set ALLOWED_USER_ROLES to enable it")
         if "*" not in allowed and not set(roles) <= set(allowed):
             raise ForbiddenError(f"roles not allowed: {', '.join(sorted(set(roles) - set(allowed)))}")
-        service_account = self.settings.sc_username.casefold()
+        # Compare in a canonical form so case, Unicode look-alikes or padding can't slip past.
+        service_account = canonical_user_name(self.settings.sc_username) if self.settings.sc_username else ""
         if service_account and service_account in {
-            name.casefold() for name in (old_user_name, new_user_name) if name
+            canonical_user_name(name) for name in (old_user_name, new_user_name) if name
         }:
             raise ForbiddenError("the gateway's own service account cannot be created, changed or renamed")
 

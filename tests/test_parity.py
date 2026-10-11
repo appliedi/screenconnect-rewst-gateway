@@ -438,9 +438,24 @@ def test_16_user_management_is_disabled_by_default(make_client, fake):
     ],
 )
 def test_16_service_account_cannot_be_targeted(client, fake, body):
+    """conftest's service account is "svc-gateway"."""
     response = client.post("/v1/users/save", json=body, headers=WRITE)
     assert response.status_code == 403
     assert "service account" in response.json()["message"]
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("name", [" svc-gateway", "svc-gateway\t", "svc-gateway\u200b", "x\u0000y"])
+def test_16_padded_or_control_character_names_rejected(client, fake, name):
+    response = client.post("/v1/users/save", json={"newUserName": name, "password": "Secret-Pass-1"}, headers=WRITE)
+    assert response.status_code == 400
+    assert fake.calls == []
+
+
+def test_16_unicode_lookalike_of_service_account_blocked(client, fake):
+    fullwidth = "ｓｖｃ－ｇａｔｅｗａｙ"  # NFKC-normalizes to svc-gateway
+    response = client.post("/v1/users/save", json={"newUserName": fullwidth, "password": "Secret-Pass-1"}, headers=WRITE)
+    assert response.status_code == 403 and "service account" in response.json()["message"]
     assert fake.calls == []
 
 

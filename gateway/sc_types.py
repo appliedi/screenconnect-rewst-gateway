@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import unicodedata
+
 SESSION_TYPES = {"Support": 0, "Meeting": 1, "Access": 2}
 
 # SC.types.SessionEventType
@@ -97,6 +99,20 @@ DETAILS_CONNECTIONS = 16
 DETAILS_ALL = -1
 
 DEFAULT_USER_SOURCE = "InternalMembershipProvider"
+
+
+def canonical_user_name(name: str) -> str:
+    """Comparison form for user names: Unicode-compatibility folded, trimmed, case-insensitive."""
+    return unicodedata.normalize("NFKC", name).strip().casefold()
+
+
+def validate_user_name(name: str | None) -> str | None:
+    """The ScreenConnect admin UI trims names; reject anything it would never send."""
+    if name is None:
+        return None
+    if name != name.strip() or any(unicodedata.category(char).startswith("C") for char in name):
+        raise ValueError("user names must not have surrounding whitespace or control characters")
+    return name
 
 
 def event_type_value(value: int | str) -> int:

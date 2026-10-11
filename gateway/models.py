@@ -5,7 +5,7 @@ from typing import Any, Literal
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
-from .sc_types import DEFAULT_USER_SOURCE, event_type_value
+from .sc_types import DEFAULT_USER_SOURCE, event_type_value, validate_user_name
 
 
 class CamelModel(BaseModel):
@@ -313,6 +313,11 @@ class CreateUserRequest(RequestModel):
         None, validation_alias=AliasChoices("passwordQuestion", "otpTokenString"), description=OTP_DESCRIPTION
     )
 
+    @field_validator("user_name")
+    @classmethod
+    def _clean_user_name(cls, value: str) -> str:
+        return validate_user_name(value)
+
 
 class SaveUserRequest(RequestModel):
     """Mirrors SecurityService.SaveUser. oldUserName null creates a user; set it to update or rename one."""
@@ -334,6 +339,11 @@ class SaveUserRequest(RequestModel):
     email: str = ""
     roles: list[str] = Field(default_factory=list, description="roleNames")
     force_password_change: bool = False
+
+    @field_validator("old_user_name", "new_user_name")
+    @classmethod
+    def _clean_user_names(cls, value: str | None) -> str | None:
+        return validate_user_name(value)
 
     @model_validator(mode="after")
     def _check(self):

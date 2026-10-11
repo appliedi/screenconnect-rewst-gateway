@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.2] - 2026-10-11
+
+### Security
+- **Closed a bypass of the service-account guard.** The guard now compares names after Unicode NFKC
+  normalization, trimming and case-folding.
+- **User names with surrounding whitespace or control characters are rejected** (400), since
+  ScreenConnect's own UI never sends them.
+
 ## [1.4.1] - 2026-10-11
 
 ### Security
