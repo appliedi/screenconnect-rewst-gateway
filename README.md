@@ -170,3 +170,7 @@ scripts/export_openapi.py, scripts/live_check.py
 tests/
 openapi.json
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
