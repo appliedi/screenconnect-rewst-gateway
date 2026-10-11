@@ -75,6 +75,7 @@ def create_app(
         {"read": READ_LIMIT_PER_MINUTE, "write": WRITE_LIMIT_PER_MINUTE}, clock=clock
     )
     health_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+    health_lock = asyncio.Lock()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -174,19 +175,27 @@ def create_app(
         cached = health_cache.get("health")
         if cached and cached[0] > clock():
             return cached[1]
-        restful_health, native_health = await asyncio.gather(gateway.probe("restful"), gateway.probe("native"))
-        results = {"restful": restful_health, "native": native_health}
-        enabled = [result for result in results.values() if result["enabled"]]
-        healthy = [result for result in enabled if result["ok"]]
-        if enabled and len(healthy) == len(enabled):
-            status = "ok"
-        elif healthy:
-            status = "degraded"
-        else:
-            status = "down"
-        body = {"status": status, **results}
-        health_cache["health"] = (clock() + settings.health_cache_seconds, body)
-        return body
+        # Unauthenticated endpoint: single-flight so a burst can't fan out to
+        # ScreenConnect (or repeat failed logins and lock the service account).
+        async with health_lock:
+            cached = health_cache.get("health")
+            if cached and cached[0] > clock():
+                return cached[1]
+            restful_health, native_health = await asyncio.gather(
+                gateway.probe("restful"), gateway.probe("native")
+            )
+            results = {"restful": restful_health, "native": native_health}
+            enabled = [result for result in results.values() if result["enabled"]]
+            healthy = [result for result in enabled if result["ok"]]
+            if enabled and len(healthy) == len(enabled):
+                status = "ok"
+            elif healthy:
+                status = "degraded"
+            else:
+                status = "down"
+            body = {"status": status, **results}
+            health_cache["health"] = (clock() + settings.health_cache_seconds, body)
+            return body
 
     v1 = APIRouter(prefix="/v1", dependencies=[Depends(authorize)])
 

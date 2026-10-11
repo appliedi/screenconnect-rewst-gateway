@@ -100,3 +100,29 @@ def test_config_requires_distinct_keys():
     assert not settings.restful_enabled and not settings.native_enabled
     quoted = Settings.from_env({"GATEWAY_WRITE_KEY": "w-key", "COMPANY_GROUP_PATH": '"All Machines by Company"'})
     assert quoted.company_group_path == "All Machines by Company"
+
+
+def test_concurrent_health_requests_probe_upstream_once(fake):
+    import asyncio
+
+    import httpx
+    from conftest import make_settings
+
+    from gateway.main import create_app
+
+    fake.restful["GetSessionsByName"] = lambda args: []
+    fake.native["SessionGroupService.ashx/GetSessionGroups"] = lambda args: []
+    app = create_app(
+        make_settings(),
+        restful_transport=httpx.MockTransport(fake.handle_restful),
+        native_transport=httpx.MockTransport(fake.handle_native),
+    )
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gw") as client:
+            responses = await asyncio.gather(*(client.get("/health") for _ in range(25)))
+        assert all(r.status_code == 200 for r in responses)
+
+    asyncio.run(run())
+    assert len(fake.calls_to("restful", "GetSessionsByName")) == 1
+    assert len(fake.calls_to("native", "SessionGroupService.ashx/GetSessionGroups")) == 1
