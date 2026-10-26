@@ -3,7 +3,7 @@
   "info": {
     "title": "ScreenConnect Gateway",
     "description": "Single REST API over ConnectWise ScreenConnect's built-in web API and the RESTful API Manager extension. All reads are GET. Responses carry `X-Gateway-Backend: restful|native`. Errors are always `{\"message\": \"...\"}`.",
-    "version": "1.4.3"
+    "version": "1.4.4"
   },
   "servers": [
     {

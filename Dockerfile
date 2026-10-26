@@ -1,4 +1,6 @@
-FROM python:3.12-slim
+# Pinned to an exact patch release so every base-image update is an explicit, reviewable change
+# and a build can't silently reuse a stale cached layer. Bump on each Python security release.
+FROM python:3.12.15-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

@@ -249,7 +249,7 @@ The gateway covers all 16 operations of Rewst's two original ScreenConnect integ
   - The login itself is single-flight: concurrent requests share one login. On 401/403/redirect the client re-logs in once and retries, but not within 30 s of a successful login (a 403 then means permission denied, and re-logging in would reuse the TOTP code).
 - **Responses** carry `Cache-Control: no-store`, so a CDN or proxy won't cache company data. Shared caches don't treat `X-Api-Key` like `Authorization`.
 - **Upstream calls:** 30 s timeout per call and a 90 s overall deadline per request (retries, re-login and fallback included); redirects are never followed and are treated as failures, and the upstream host is fixed by `SC_BASE_URL`, so callers can't redirect requests elsewhere (no SSRF).
-- **Container:** runs as a non-root user (uid 10001). Dependencies are installed from `requirements.lock` with `--require-hashes`, which a test keeps identical to `uv.lock`. The base image is the `python:3.12-slim` tag rather than a digest, so rebuilds pick up OS security patches.
+- **Container:** runs as a non-root user (uid 10001). Dependencies are installed from `requirements.lock` with `--require-hashes`, which a test keeps identical to `uv.lock`. The base image is pinned to an exact Python patch release (`python:3.12.15-slim`). Bump it on each Python security release; the new tag forces a fresh pull, which also brings current Debian security patches.
 
 ### Reporting a vulnerability
 

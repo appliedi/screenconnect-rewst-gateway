@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.4] - 2026-10-26
+
+### Security
+- **`certifi` upgraded to 2026.10.23** (PYSEC-2026-4320 / GHSA-6q48-6c7w-9gw2).
+  - It removes the `emSign ECC Root CA - G3` root, whose intermediates' private keys were compromised.
+  - With the old bundle, an on-path attacker holding one of those keys could have impersonated the
+    ScreenConnect host to the gateway and captured its upstream credentials.
+- **Docker base image pinned to `python:3.12.15-slim`** (Python 3.12.15 security release). The
+  exact tag forces a fresh base-image pull rather than reusing a stale cached layer.
+
+### Changed
+- **Dependencies upgraded:** FastAPI 0.162.0, Starlette 1.10.0, Pydantic 2.14.1. No API changes;
+  `openapi.json` is unchanged apart from the version.
+
 ## [1.4.3] - 2026-10-11
 
 ### Security
